@@ -1,6 +1,6 @@
 # Feature: crap4csharp — faithful C# port of crap4java
 **Branch:** vibe/crap4csharp-port
-**Status:** Planning
+**Status:** In progress — S1 complete (T1 landed `d3dd17f`); awaiting Mr. Das on C1/C2 (see Notes). S2 next.
 
 ## Requirements
 
@@ -42,7 +42,7 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 
 | #   | Slice | Task | Status | Commit |
 |-----|-------|------|--------|--------|
-| T1  | S1 | Repo/solution scaffolding: `crap4csharp.sln`, `src/Crap4CSharp` (Exe, net8.0, Roslyn ref), `tests/Crap4CSharp.Tests` (xUnit + coverlet + FA 7.x), import shared `.targets`; empty build + `dotnet test` run | Pending | - |
+| T1  | S1 | Repo/solution scaffolding: `crap4csharp.sln`, `src/Crap4CSharp` (Exe, net8.0, Roslyn ref), `tests/Crap4CSharp.Tests` (xUnit + coverlet + FA 7.x), import shared `.targets`; empty build + `dotnet test` run | Done | `d3dd17f` |
 | T2  | S2 | Domain types: `CliMode`, `CliArguments`, `CoverageData`(+`CoveragePercent`), `MethodDescriptor`(+`TypeName`), `MethodMetrics` | Pending | - |
 | T3  | S2 | `CrapScore` + `CrapScoreTests` (oracles 5.0/30.0/18.648/null) | Pending | - |
 | T4  | S2 | `ReportFormatter` + golden `ReportFormatterTests` (InvariantCulture, `"\n"`) | Pending | - |
@@ -100,3 +100,22 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
 - This feature file + `docs/decisions.md` are seeded on `master`. Implementation runs on
   `vibe/crap4csharp-port`; JARVIS creates that branch and drives T1→T16 via Dave/Bhaskar, with Anders
   review per task.
+
+### Open decisions for Mr. Das (surfaced at S1 boundary — non-blocking for S2)
+
+- **C1 — Assembly structure.** T1 scaffolds one production assembly (`src/Crap4CSharp`) that already
+  references Roslyn; S2's pure core and S3's adapters would co-locate there, so the "core has no
+  ecosystem deps" rule is convention/review-enforced, not compiler-enforced. Anders recommends
+  **Option A** (single assembly, mirrors crap4java's single module, YAGNI); a later Core/Adapters
+  split is a mechanical file-move (no rework risk). Alternative: **Option B** (physical
+  Core/Adapters/Exe split, compile-time enforcement, diverges from Java shape). *Awaiting ruling.*
+- **C2 — Test-naming under CA1707.** `AnalysisLevel=latest-all` + Release warnings-as-errors makes
+  CA1707 an error, so underscores in member names (incl. the `Method_State_Expected` xUnit style)
+  fail the build. Anders recommends **keep CA1707 on everywhere → PascalCase test names**
+  (parity tests mirror Java *behavior*, not names). Alternative: **suppress CA1707 for `tests/**`**
+  to allow `Method_State_Expected`. *Awaiting ruling; once decided, JARVIS records the convention in
+  `.github/copilot-instructions.md` per guardrail #10.*
+- **C3 (process note).** The throwaway `ScaffoldingSanityTests.cs` is deleted by whichever task first
+  adds real tests to `Crap4CSharp.Tests` (not carried to T16).
+- **C4 (deferred trivia).** If ever packed as a `dotnet tool`, set `ToolCommandName=crap4csharp` so the
+  CLI invocation name matches the contract.
