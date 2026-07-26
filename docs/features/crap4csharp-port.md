@@ -167,11 +167,15 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
 
 ### Open decision for Mr. Das (from T5, design-lane)
 
-- **D-T5 — CA1062 `ArgumentNullException.ThrowIfNull` idiom.** *(PENDING — Mr. Das asked to clarify
-  before ruling; does NOT block S3.)* Public API surfaces carry analyzer-forced null guards
-  (suppressions banned). Java's implicit NPE-on-null becomes a typed `ArgumentNullException`
-  (⊂ `ArgumentException`) — behavior-preserving, fail-fast-consistent, unreachable on the real
-  `Main(string[])` path. Dave continues writing the CA1062-required guards exactly as analyzers demand
-  (code is identical either way). The ONLY open item is whether to add a **standing-policy line** to
-  `docs/decisions.md`; JARVIS will not write it until Mr. Das rules. (JARVIS does not edit
-  `decisions.md` unilaterally.)
+- **D-T5 — CA1062 `ArgumentNullException.ThrowIfNull` idiom.** *(RESOLVED — Mr. Das ruled
+  BELOW-THRESHOLD.)* The analyzer-forced null guards are a trivial idiomatic adaptation, **not** a
+  logged departure: **no** standing-policy line is added to `docs/decisions.md`. Dave continues writing
+  the CA1062-required guards exactly as before (code unchanged); Bhaskar/Anders treat them as
+  non-noteworthy going forward.
+- **D-T9 — Parser plumbing / signature (non-1:1).** *(OPEN — escalated to Mr. Das.)* Drop
+  `JavaMethodParser.sourcePath`/`sourceUri` and their 2 tests (`buildsSourcePathAndUriFromClassNames`,
+  `acceptsClassNamesWithJavaSuffix`) as javac file-URI plumbing with no Roslyn referent, and adopt
+  `Parse(string source)` (drops the vestigial `className`). Anders recommends **Option A (drop both)**;
+  the 7 remaining Java parser tests port as faithful behavioral counterparts. **Blocks T9** (parser
+  signature + test set depend on the ruling). Design-lane FYIs (Anders, vetoable): collection scope =
+  methods only; expression-bodied methods included; nested-type class-name format is a T10 pin.
