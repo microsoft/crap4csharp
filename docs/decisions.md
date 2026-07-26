@@ -12,6 +12,18 @@ Locked decisions for the C# port of `crap4java`. Source of truth alongside `docs
 - **Test fidelity:** every `crap4java` test gets a faithful C# counterpart with identical
   verification — except where an approved deliberate departure changes it.
 
+## CRAP formula
+
+Preserved verbatim from `crap4java`. For a method with cyclomatic complexity `CC` and coverage
+fraction `coverage ∈ [0, 1]`:
+
+- **Formula:** `CRAP = CC² · (1 − coverage)³ + CC`
+- **Threshold:** a method is flagged **crappy** when `CRAP > 8.0`.
+
+The formula and threshold are unchanged from `crap4java`; only `CC` is computed with the augmented
+node set below (an approved departure), so absolute CRAP scores are not numerically comparable to
+`crap4java` on code using the modern constructs.
+
 ## Locked choices
 
 | Area | Decision | Notes |
@@ -25,6 +37,19 @@ Locked decisions for the C# port of `crap4java`. Source of truth alongside `docs
 | Assertions | **FluentAssertions 7.x**, pinned `[7.0.0,8.0.0)` | v8+ is commercial (Xceed); lock file enforces the pin |
 | Coverage key | Roslyn enclosing-type **FQN** per method | C# allows many types per file; filename keys mis-match Cobertura |
 | Module root | nearest **`.sln`** (fallback `.csproj` → project root) | so `dotnet test` actually runs tests |
+
+## Ratified conventions (Mr. Das)
+
+- **C1 — Single production assembly.** All production code lives in one assembly, `src/Crap4CSharp`
+  (mirrors `crap4java`'s single module). The pure core must not depend on the ecosystem adapters
+  (Roslyn/Cobertura/process/git); this "core has no ecosystem dependencies" rule is enforced by
+  **review and folder/namespace discipline**, not a compile-time project boundary. No
+  Core/Adapters/Exe split unless Mr. Das later rules otherwise.
+- **C2 — No underscores in member names (CA1707).** Analyzers run `latest-all` with
+  warnings-as-errors in Release, so CA1707 is fatal on **all** member names — **including xUnit test
+  methods** (e.g. `HarnessDiscoversAndRuns`, not `Method_State_Expected`). Parity tests preserve
+  `crap4java`'s **behavior, not its names**; PascalCase-renaming a ported test is not a fidelity
+  break.
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 

@@ -7,9 +7,8 @@ Address the human as **Mr. Das** (an alt of Iron Man), "Sir", or something simil
 ## What this repo is
 
 `crap4csharp` is a high-fidelity C# port of the Java tool `crap4java` (read-only sibling at
-`../crap4java`). It is a CRAP-metric analyzer for **C# projects**: Roslyn for parsing + cyclomatic
-complexity, Coverlet → Cobertura for coverage, `dotnet test` / MSBuild as the driver. Design intent,
-locked decisions, and the task plan live in `docs/decisions.md` and `docs/features/<feature>.md`.
+`../crap4java`) — a CRAP-metric analyzer for **C# projects**. Project design (intent, locked choices,
+the CRAP formula) lives in `docs/decisions.md`; per-feature plans in `docs/features/<feature>.md`.
 
 ## Golden rules (guardrails)
 
@@ -31,37 +30,16 @@ locked decisions, and the task plan live in `docs/decisions.md` and `docs/featur
 5. Never deploy.
 6. Stop and ask when a task needs a product/architecture decision. That call belongs to Mr. Das.
 7. Mr. Das can invoke any agent on demand.
-8. Tests are fidelity-first: every `crap4java` test has a faithful C# counterpart asserting the same
-   behavior. Beyond parity, add fine-grained unit tests for business logic and integration tests only
+8. Fidelity-first: preserve `crap4java`'s behavior, and give every `crap4java` test a faithful C#
+   counterpart asserting the same behavior — except where `docs/decisions.md` records an approved
+   departure. Beyond parity, add fine-grained unit tests for business logic and integration tests only
    for critical paths — don't overdo it. Avoid timing-sensitive tests.
 9. Never use the `internal` access modifier on any C# construct — use the least-privilege
    alternative; if it is a must, flag it.
-10. Record durable facts in the relevant `.github/agents/<agent>.md` (or this file if cross-cutting),
-    not global Copilot Memory.
+10. Record durable facts by kind: project-design decisions/conventions → `docs/decisions.md`;
+    agent-process facts → the relevant `.github/agents/<agent>.md` (or this playbook if
+    cross-cutting). Never global Copilot Memory.
 
-## Fidelity contract (this port)
-
-- Preserve `crap4java`'s class decomposition, CRAP formula (`CC² · (1 − coverage)³ + CC`, threshold
-  `8.0`), CLI contract, report format, and exit codes. Adapt only the ecosystem adapters (Java parser
-  → Roslyn, JaCoCo → Cobertura, Maven → dotnet).
-- **Approved deliberate departures** from the Java tool (see `docs/decisions.md`):
-  - **Fail fast** on no-tests-run / no-coverage-produced for a module → non-zero exit (not the Java
-    warn-and-continue with `N/A`). Per-method `N/A` is unchanged.
-  - **Richer cyclomatic complexity** — counts switch-expression arms, `??`/`??=`, pattern
-    `and`/`or`/`not`, and every `when` guard, in addition to the Java decision set. CC is therefore
-    not numerically comparable to `crap4java` on such constructs.
-  - **Coverage key** by Roslyn enclosing-type FQN; **nullable** reference types enabled;
-    **InvariantCulture** + explicit `\n` in the report.
-
-## Ratified conventions (Mr. Das)
-
-- **Single production assembly.** All production code lives in one assembly, `src/Crap4CSharp`
-  (mirrors `crap4java`'s single module). The pure core must not depend on the ecosystem adapters
-  (Roslyn/Cobertura/process/git); this "core has no ecosystem dependencies" rule is enforced by
-  **review and folder/namespace discipline**, not a compile-time project boundary. No
-  Core/Adapters/Exe split unless Mr. Das later rules otherwise.
-- **No underscores in member names (CA1707).** Analyzers run `latest-all` with warnings-as-errors in
-  Release, so CA1707 is fatal. All member names — **including xUnit test methods** — must be
-  PascalCase with no underscores (e.g. `HarnessDiscoversAndRuns`, not `Method_State_Expected`).
-  Parity tests preserve `crap4java`'s **behavior**, not its **names**; renaming a ported test to
-  PascalCase is not a fidelity break.
+Project design — the CRAP formula, approved departures, the complexity node set, and ratified
+conventions (assembly structure, test naming) — lives in `docs/decisions.md`; reload it before
+working.
