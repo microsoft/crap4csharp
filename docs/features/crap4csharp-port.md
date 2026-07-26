@@ -1,6 +1,6 @@
 # Feature: crap4csharp — faithful C# port of crap4java
 **Branch:** vibe/crap4csharp-port
-**Status:** In progress — S1 complete (T1 landed `d3dd17f`); awaiting Mr. Das on C1/C2 (see Notes). S2 next.
+**Status:** In progress — S2: T2 done (`545c000`). Domain types landed; T3/T4/T5 next.
 
 ## Requirements
 
@@ -43,7 +43,7 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | #   | Slice | Task | Status | Commit |
 |-----|-------|------|--------|--------|
 | T1  | S1 | Repo/solution scaffolding: `crap4csharp.sln`, `src/Crap4CSharp` (Exe, net8.0, Roslyn ref), `tests/Crap4CSharp.Tests` (xUnit + coverlet + FA 7.x), import shared `.targets`; empty build + `dotnet test` run | Done | `d3dd17f` |
-| T2  | S2 | Domain types: `CliMode`, `CliArguments`, `CoverageData`(+`CoveragePercent`), `MethodDescriptor`(+`TypeName`), `MethodMetrics` | Pending | - |
+| T2  | S2 | Domain types: `CliMode`, `CliArguments`, `CoverageData`(+`CoveragePercent`), `MethodDescriptor`(+`TypeName`), `MethodMetrics` | Done | `545c000` |
 | T3  | S2 | `CrapScore` + `CrapScoreTests` (oracles 5.0/30.0/18.648/null) | Pending | - |
 | T4  | S2 | `ReportFormatter` + golden `ReportFormatterTests` (InvariantCulture, `"\n"`) | Pending | - |
 | T5  | S2 | `CliArgumentsParser` + `CliArgumentsParserTests` (7 cases) | Pending | - |
@@ -101,21 +101,40 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   `vibe/crap4csharp-port`; JARVIS creates that branch and drives T1→T16 via Dave/Bhaskar, with Anders
   review per task.
 
-### Open decisions for Mr. Das (surfaced at S1 boundary — non-blocking for S2)
+### Decisions ruled by Mr. Das at S1 boundary
 
-- **C1 — Assembly structure.** T1 scaffolds one production assembly (`src/Crap4CSharp`) that already
-  references Roslyn; S2's pure core and S3's adapters would co-locate there, so the "core has no
-  ecosystem deps" rule is convention/review-enforced, not compiler-enforced. Anders recommends
-  **Option A** (single assembly, mirrors crap4java's single module, YAGNI); a later Core/Adapters
-  split is a mechanical file-move (no rework risk). Alternative: **Option B** (physical
-  Core/Adapters/Exe split, compile-time enforcement, diverges from Java shape). *Awaiting ruling.*
-- **C2 — Test-naming under CA1707.** `AnalysisLevel=latest-all` + Release warnings-as-errors makes
-  CA1707 an error, so underscores in member names (incl. the `Method_State_Expected` xUnit style)
-  fail the build. Anders recommends **keep CA1707 on everywhere → PascalCase test names**
-  (parity tests mirror Java *behavior*, not names). Alternative: **suppress CA1707 for `tests/**`**
-  to allow `Method_State_Expected`. *Awaiting ruling; once decided, JARVIS records the convention in
-  `.github/copilot-instructions.md` per guardrail #10.*
+- **C1 — Assembly structure → Option A (RULED).** Keep the single production assembly
+  `src/Crap4CSharp`; "core has no ecosystem deps" is enforced by review/discipline, not a compile-time
+  boundary. No Core/Adapters/Exe split now. Recorded in `.github/copilot-instructions.md`.
+- **C2 — Test-naming under CA1707 → Option A (RULED).** Keep CA1707 on everywhere → PascalCase test
+  names (no underscores); parity tests mirror Java *behavior*, not names. Recorded in
+  `.github/copilot-instructions.md`.
 - **C3 (process note).** The throwaway `ScaffoldingSanityTests.cs` is deleted by whichever task first
-  adds real tests to `Crap4CSharp.Tests` (not carried to T16).
+  adds real tests to `Crap4CSharp.Tests` (not carried to T16). *(Done in T2.)*
+
+### Carry-forward watch-items (from Anders's T2 review — must be honored at the noted task)
+
+- **W1 — CoverageData field naming → for Mr. Das before T10.** Anders recommends renaming
+  `MissedInstructions`/`CoveredInstructions` → `MissedLines`/`CoveredLines` (accurate for the
+  line-counter Cobertura adapter; the JaCoCo "instruction" concept has no referent here). It's a
+  semantic departure driven by the adapter swap, so it belongs in the departure register — a soft
+  escalation. **Not on the T3/T4/T5 path; only T10 constructs `CoverageData`.** To be ruled at the
+  S2 boundary.
+- **W2 — T5 must decompose `CliArguments` assertions.** C# records use *reference* equality on the
+  `IReadOnlyList<string> FileArgs` member (unlike Java's structural `List.equals`), so T5 tests must
+  assert `Mode` and `FileArgs` **separately** (`FileArgs.Should().Equal(...)`), never whole-record
+  equality — else a false parity break. (Mirrors how `crap4java`'s `CliArgumentsParserTest`
+  decomposes.)
+- **W3 — T9 populates `MethodDescriptor.TypeName` at construction.** Set it from the Roslyn
+  enclosing-type symbol at parse time; no empty/placeholder value. Use named args at the call site
+  (`Name` and `TypeName` are both `string` → transposition risk).
+- **W4 — `null → "N/A"` invariant.** T4 (`ReportFormatter`) and T11 (`CrapAnalyzer`) must render a
+  missing coverage/crap value as `N/A`; never let a default `0.0` leak in for "method absent from
+  report" (that would report 0% as a real measurement).
+- **W5 — Test-namespace nesting (convention).** Test classes live in `Microsoft.Crap4CSharp.Tests`
+  (nested under the production `Microsoft.Crap4CSharp`), so production types resolve in tests with **no
+  explicit `using`**; global usings exist only for `Xunit` + `FluentAssertions`. This is load-bearing
+  for test authoring and reinforces the flat-namespace decision (keep domain types flat, no `Domain`
+  namespace).
 - **C4 (deferred trivia).** If ever packed as a `dotnet tool`, set `ToolCommandName=crap4csharp` so the
   CLI invocation name matches the contract.

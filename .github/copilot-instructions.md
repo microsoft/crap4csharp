@@ -52,3 +52,16 @@ locked decisions, and the task plan live in `docs/decisions.md` and `docs/featur
     not numerically comparable to `crap4java` on such constructs.
   - **Coverage key** by Roslyn enclosing-type FQN; **nullable** reference types enabled;
     **InvariantCulture** + explicit `\n` in the report.
+
+## Ratified conventions (Mr. Das)
+
+- **Single production assembly.** All production code lives in one assembly, `src/Crap4CSharp`
+  (mirrors `crap4java`'s single module). The pure core must not depend on the ecosystem adapters
+  (Roslyn/Cobertura/process/git); this "core has no ecosystem dependencies" rule is enforced by
+  **review and folder/namespace discipline**, not a compile-time project boundary. No
+  Core/Adapters/Exe split unless Mr. Das later rules otherwise.
+- **No underscores in member names (CA1707).** Analyzers run `latest-all` with warnings-as-errors in
+  Release, so CA1707 is fatal. All member names — **including xUnit test methods** — must be
+  PascalCase with no underscores (e.g. `HarnessDiscoversAndRuns`, not `Method_State_Expected`).
+  Parity tests preserve `crap4java`'s **behavior**, not its **names**; renaming a ported test to
+  PascalCase is not a fidelity break.
