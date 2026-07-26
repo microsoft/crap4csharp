@@ -47,8 +47,8 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T3  | S2 | `CrapScore` + `CrapScoreTests` (oracles 5.0/30.0/18.648/null) | Done | `47c1a1c` |
 | T4  | S2 | `ReportFormatter` + golden `ReportFormatterTests` (InvariantCulture, `"\n"`) | Done | `f830f0e` |
 | T5  | S2 | `CliArgumentsParser` + `CliArgumentsParserTests` (7 cases) | Done | `1b7833b` |
-| T6  | S3 | `ICommandExecutor` + `ProcessCommandExecutor` + tests | Pending | - |
-| T7  | S3 | `SourceFileFinder` (`src/**/*.cs`, exclude `bin`/`obj`, ordinal sort) + tests | Pending | - |
+| T6  | S3 | `ICommandExecutor` + `ProcessCommandExecutor` + tests | Done | `(next commit)` |
+| T7  | S3 | `SourceFileFinder` (`src/**/*.cs`, exclude `bin`/`obj`, ordinal sort) + tests | Done | `1b90d24` |
 | T8  | S3 | `ChangedFileDetector` (git porcelain) + integration tests | Pending | - |
 | T9  | S3 | `CSharpMethodParser` + `ComplexityWalker` (augmented node set) + CC oracle tests | Pending | - |
 | T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Pending | - |
@@ -182,6 +182,20 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   counter; make it `_complexity` (or similar `_camelCase`). It is CA1707-exempt and Release-clean, and
   `_camelCase` is the `.editorconfig`-configured style. See the **C2 clarification** in
   `docs/decisions.md`; don't repeat T7's avoidance of a private field.
+
+### Carry-forward watch-items (from Anders's T6 review — must be honored at the noted task)
+
+- **W15 — `ICommandExecutor` is an exit-code-only seam; do NOT route git (T8) through it (T8/T12).**
+  In crap4java the `CommandExecutor` seam has exactly one consumer — `CoverageRunner` (T12) — which
+  needs only the child **exit code**. `ProcessCommandExecutor`'s async drain writes child output
+  **through to `Console.Out`/`Console.Error`** (the `inheritIO()` analog) and returns `int`; it does
+  **not** capture output. `ChangedFileDetector` (T8) deliberately uses its **own** process
+  (Java: `redirectErrorStream(true)` + `readAllBytes()`) to **capture** git's stdout for parsing.
+  Preserve that split: T8 captures stdout via its own `Process` and must read the stream to end
+  **before/while** awaiting exit (Java's `waitFor()`-then-read ordering is a latent full-pipe deadlock —
+  fix it in the port, don't copy it); do **not** reuse `ICommandExecutor` for git. T12 injects
+  `ICommandExecutor` (cf. `CoverageRunnerTest`'s `RecordingExecutor` fake) and consumes only the exit
+  code — large `dotnet test` output through the seam is safe (both streams drained → no deadlock).
 
 ### Open decision for Mr. Das (from T5, design-lane)
 
