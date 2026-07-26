@@ -47,9 +47,9 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T3  | S2 | `CrapScore` + `CrapScoreTests` (oracles 5.0/30.0/18.648/null) | Done | `47c1a1c` |
 | T4  | S2 | `ReportFormatter` + golden `ReportFormatterTests` (InvariantCulture, `"\n"`) | Done | `f830f0e` |
 | T5  | S2 | `CliArgumentsParser` + `CliArgumentsParserTests` (7 cases) | Done | `1b7833b` |
-| T6  | S3 | `ICommandExecutor` + `ProcessCommandExecutor` + tests | Done | `(next commit)` |
+| T6  | S3 | `ICommandExecutor` + `ProcessCommandExecutor` + tests | Done | `da02028` |
 | T7  | S3 | `SourceFileFinder` (`src/**/*.cs`, exclude `bin`/`obj`, ordinal sort) + tests | Done | `1b90d24` |
-| T8  | S3 | `ChangedFileDetector` (git porcelain) + integration tests | Pending | - |
+| T8  | S3 | `ChangedFileDetector` (git porcelain) + integration tests | Done | `(next commit)` |
 | T9  | S3 | `CSharpMethodParser` + `ComplexityWalker` (augmented node set) + CC oracle tests | Pending | - |
 | T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Pending | - |
 | T11 | S4 | `CrapAnalyzer` (exact→nearest-line lookup, per-method `TypeName`) + tests | Pending | - |
@@ -197,6 +197,16 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   `ICommandExecutor` (cf. `CoverageRunnerTest`'s `RecordingExecutor` fake) and consumes only the exit
   code — large `dotnet test` output through the seam is safe (both streams drained → no deadlock).
 
+### Carry-forward watch-items (from Anders's T8 review — must be honored at the noted task)
+
+- **W16 — T14 `ChangedSrc` must call `ChangedCSharpFilesUnderSrc`, not `ChangedCSharpFiles`.**
+  `ChangedFileDetector` exposes **two** public entry points; Java's `CliApplication`
+  (`CHANGED_SRC -> changedJavaFilesUnderSrc`, `CliApplication.java:89`) uses the **src-filtered**
+  variant. T14's `ChangedSrc` arm must route through `ChangedCSharpFilesUnderSrc` (the segment-aware
+  under-`src` filter), never the unfiltered `ChangedCSharpFiles` — otherwise changed files outside
+  `src/` leak into the analysis set. Reinforces W8 (files for `ChangedSrc` come from the detector, not
+  `FileArgs`).
+
 ### Open decision for Mr. Das (from T5, design-lane)
 
 - **D-T5 — CA1062 `ArgumentNullException.ThrowIfNull` idiom.** *(RESOLVED — Mr. Das ruled
@@ -211,3 +221,23 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   the 7 remaining Java parser tests port as faithful behavioral counterparts. **Blocks T9** (parser
   signature + test set depend on the ruling). Design-lane FYIs (Anders, vetoable): collection scope =
   methods only; expression-bodied methods included; nested-type class-name format is a T10 pin.
+- **D-T8 — Integration-test categorization / fast-loop scope (agentic-loop policy).** *(OPEN —
+  escalated to Mr. Das; JARVIS to route at the S3 boundary.)* `.github/skills/build-test.md` promises
+  the fast loop excludes integration tests via `--filter "Category!=Integration"`, but **no** test
+  carries that trait (0 grep matches), so the fast loop currently spawns real `git`/processes
+  (`ChangedFileDetectorTests`, `ProcessCommandExecutorTests`) — doc and code disagree. Two coherent
+  resolutions: **(a)** keep plain `[Fact]` and reword `build-test.md` to drop the "tests are tagged"
+  claim (collapses the two-tier loop — `build-test` and `build-test-full` then run the same set);
+  **(b)** add `[Trait("Category", "Integration")]` to `ProcessCommandExecutorTests` **and**
+  `ChangedFileDetectorTests` (and to every future process/CLI/`git`/`dotnet`-spawning test —
+  T12/T14/T15/T16), making the fast loop genuinely hermetic and the doc accurate as written. **Anders
+  recommends (b)** — it preserves the deliberate fast/full split (else `build-test-full` is redundant),
+  correctly categorizes tests that spawn external processes, and pays off as S4's integration tests
+  land; T6's plain-`[Fact]` `ProcessCommandExecutorTests` is then a gap to fix retroactively, not a
+  convention to propagate. This sets a **testing convention** governing future tasks and edits an
+  agentic-loop skill file, so it is Mr. Das's call, not Anders's design lane. **If (b):** Dave adds a
+  class-level `[Trait("Category", "Integration")]` to both test classes (no new `using` — `Xunit` is a
+  global using), and the convention is recorded in `docs/decisions.md` (Ratified conventions); no
+  `build-test.md` edit. **If (a):** replace `build-test.md`'s final paragraph with the no-tagging
+  reality (forward-looking: tag integration tests as they land). Either way the doc/reality gap must
+  close at the ratification point.

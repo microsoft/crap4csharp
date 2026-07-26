@@ -73,10 +73,12 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
    numerically comparable** to `crap4java` on code using the modern constructs.
 3. **Determinism/idiom** — nullable reference types enabled; `InvariantCulture` + explicit `"\n"` in
    the report; `StringComparer.Ordinal` sort in `SourceFileFinder` **in place of** Java's
-   platform-dependent `Comparator.naturalOrder()` over `Path` (case-insensitive on Windows,
-   case-sensitive on Unix), so source-file discovery order is identical across OSes. Below the
-   behavioral-departure bar (the final report is keyed/sorted downstream, not by discovery order); logged
-   here only as the determinism counterpart to the `InvariantCulture`/`"\n"` choices.
+   platform-dependent `Comparator.naturalOrder()` over `Path`, and the same `StringComparer.Ordinal`
+   sort in `ChangedFileDetector` **in place of** Java's `Path::compareTo` (both case-insensitive on
+   Windows, case-sensitive on Unix), so source-file discovery and changed-file order are identical
+   across OSes. Below the behavioral-departure bar (the final report is keyed/sorted downstream, not by
+   discovery order); logged here only as the determinism counterpart to the `InvariantCulture`/`"\n"`
+   choices.
 4. **Line-based coverage field names** — `CoverageData`'s counter fields are renamed from crap4java's
    `missedInstructions`/`coveredInstructions` to `MissedLines`/`CoveredLines` (and the record's doc
    comment reframed to match). This port's coverage adapter is Coverlet → **Cobertura line** counters,
