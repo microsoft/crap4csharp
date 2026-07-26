@@ -1,6 +1,6 @@
 # Feature: crap4csharp — faithful C# port of crap4java
 **Branch:** vibe/crap4csharp-port
-**Status:** In progress — S2: T2 done (`545c000`). Domain types landed; T3/T4/T5 next.
+**Status:** In progress — **S2 complete** (T2 `545c000`, T3 `47c1a1c`, T4 `f830f0e`, T5 `1b7833b`); pure core landed, 16 tests green, 0/0 Release. Paused at S2 boundary for Mr. Das's steer before S3.
 
 ## Requirements
 
@@ -44,9 +44,9 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 |-----|-------|------|--------|--------|
 | T1  | S1 | Repo/solution scaffolding: `crap4csharp.sln`, `src/Crap4CSharp` (Exe, net8.0, Roslyn ref), `tests/Crap4CSharp.Tests` (xUnit + coverlet + FA 7.x), import shared `.targets`; empty build + `dotnet test` run | Done | `d3dd17f` |
 | T2  | S2 | Domain types: `CliMode`, `CliArguments`, `CoverageData`(+`CoveragePercent`), `MethodDescriptor`(+`TypeName`), `MethodMetrics` | Done | `545c000` |
-| T3  | S2 | `CrapScore` + `CrapScoreTests` (oracles 5.0/30.0/18.648/null) | Pending | - |
-| T4  | S2 | `ReportFormatter` + golden `ReportFormatterTests` (InvariantCulture, `"\n"`) | Pending | - |
-| T5  | S2 | `CliArgumentsParser` + `CliArgumentsParserTests` (7 cases) | Pending | - |
+| T3  | S2 | `CrapScore` + `CrapScoreTests` (oracles 5.0/30.0/18.648/null) | Done | `47c1a1c` |
+| T4  | S2 | `ReportFormatter` + golden `ReportFormatterTests` (InvariantCulture, `"\n"`) | Done | `f830f0e` |
+| T5  | S2 | `CliArgumentsParser` + `CliArgumentsParserTests` (7 cases) | Done | `1b7833b` |
 | T6  | S3 | `ICommandExecutor` + `ProcessCommandExecutor` + tests | Pending | - |
 | T7  | S3 | `SourceFileFinder` (`src/**/*.cs`, exclude `bin`/`obj`, ordinal sort) + tests | Pending | - |
 | T8  | S3 | `ChangedFileDetector` (git porcelain) + integration tests | Pending | - |
@@ -124,7 +124,7 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   `IReadOnlyList<string> FileArgs` member (unlike Java's structural `List.equals`), so T5 tests must
   assert `Mode` and `FileArgs` **separately** (`FileArgs.Should().Equal(...)`), never whole-record
   equality — else a false parity break. (Mirrors how `crap4java`'s `CliArgumentsParserTest`
-  decomposes.)
+  decomposes.) *(Done in T5 — tests assert `Mode` + `FileArgs` separately; Bhaskar + Anders confirmed.)*
 - **W3 — T9 populates `MethodDescriptor.TypeName` at construction.** Set it from the Roslyn
   enclosing-type symbol at parse time; no empty/placeholder value. Use named args at the call site
   (`Name` and `TypeName` are both `string` → transposition risk).
@@ -138,3 +138,33 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   namespace).
 - **C4 (deferred trivia).** If ever packed as a `dotnet tool`, set `ToolCommandName=crap4csharp` so the
   CLI invocation name matches the contract.
+
+### Carry-forward watch-items (from Anders's T5 review — for the T14/T15 CLI seam)
+
+- **W6 — T14 catches `ArgumentException`, not narrower.** Java `parseArguments` catches
+  `IllegalArgumentException` → prints `ex.Message` to **stderr** + usage → **exit 1**. Faithful port:
+  `catch (ArgumentException)`. This also catches the CA1062 `ArgumentNullException` subtype (unreachable,
+  same routing) — do **not** add a separate narrower `catch (ArgumentNullException)`.
+- **W7 — Help short-circuits before file resolution, exit 0.** Java handles `HELP` inside
+  `parseArguments` (print usage, exit 0) *before* `filesForMode`. Mirror in T14. Use a `switch`
+  expression over all four `CliMode` arms with a `default` throw so a future enum value fails loud.
+- **W8 — `AllSrc`/`ChangedSrc`/`Help` carry empty `FileArgs` by design.** Files for those modes come
+  from downstream (`SourceFileFinder` T7 / `ChangedFileDetector` T8), **not** from `FileArgs`. T14 must
+  not read empty `FileArgs` as "nothing to do."
+- **W9 — Unknown-flag tolerance is contract.** `--bogus` is silently dropped by the `--` filter (parity
+  test). Downstream must **never** re-validate/reject unknown flags. Only `--changed` + non-flag files is
+  an error — and `--help` wins over `--changed` (checked first), so `--help --changed foo.cs` → `Help`,
+  not a throw.
+- **W10 — The `--changed` combined-args message is a user-facing contract.** Because `parseArguments`
+  prints `ex.Message`, T14 should assert **stderr** contains `--changed cannot be combined with file
+  arguments`. The parser tests correctly assert only the exception *type* (parity); the message
+  assertion belongs at the T14 integration seam.
+
+### Open decision for Mr. Das (from T5, design-lane)
+
+- **D-T5 — CA1062 `ArgumentNullException.ThrowIfNull` idiom.** Public API surfaces carry analyzer-forced
+  null guards (suppressions banned). Java's implicit NPE-on-null becomes a typed `ArgumentNullException`
+  (⊂ `ArgumentException`) — behavior-preserving, fail-fast-consistent, unreachable on the real
+  `Main(string[])` path. Anders + Bhaskar lean: log **one** standing-policy line in `docs/decisions.md`
+  (the pattern will recur across T6–T16), or declare it below the departure threshold. **Ruling needed
+  before S3** so the idiom is settled project-wide. (JARVIS does not edit `decisions.md` unilaterally.)
