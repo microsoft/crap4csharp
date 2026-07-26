@@ -50,6 +50,18 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
   methods** (e.g. `HarnessDiscoversAndRuns`, not `Method_State_Expected`). Parity tests preserve
   `crap4java`'s **behavior, not its names**; PascalCase-renaming a ported test is not a fidelity
   break.
+  - **C2 clarification (T7 review; Bhaskar-verified build behavior).** CA1707 targets only
+    **externally-visible** identifiers (public/protected) — which includes public xUnit test methods —
+    so **private fields are outside its scope and build clean with or without a leading underscore**.
+    The `.editorconfig` moreover *configures* `_camelCase` for private fields
+    (`dotnet_naming_rule.private_members_with_underscore`) and deliberately disables StyleCop `SA1309`
+    (the anti-underscore rule), so the **intended, build-safe form for a private field is `_camelCase`**
+    (e.g. T9 `ComplexityWalker`'s complexity counter → `_complexity`). That naming rule is surfaced by
+    IDE1006, which is not enforced during `dotnet build` (a known Roslyn limitation), so it is never a
+    Release error either way — but `_camelCase` is both the configured style and future-proof. Net: C2's
+    "no underscores … on **all** member names" governs the **CA1707 surface** (externally-visible
+    members + public test methods), **not** private fields; do not avoid a private field for fear of a
+    CA1707 conflict.
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
@@ -60,7 +72,11 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
 2. **Richer cyclomatic complexity** — augmented Roslyn node set (below). CC is therefore **not
    numerically comparable** to `crap4java` on code using the modern constructs.
 3. **Determinism/idiom** — nullable reference types enabled; `InvariantCulture` + explicit `"\n"` in
-   the report.
+   the report; `StringComparer.Ordinal` sort in `SourceFileFinder` **in place of** Java's
+   platform-dependent `Comparator.naturalOrder()` over `Path` (case-insensitive on Windows,
+   case-sensitive on Unix), so source-file discovery order is identical across OSes. Below the
+   behavioral-departure bar (the final report is keyed/sorted downstream, not by discovery order); logged
+   here only as the determinism counterpart to the `InvariantCulture`/`"\n"` choices.
 4. **Line-based coverage field names** — `CoverageData`'s counter fields are renamed from crap4java's
    `missedInstructions`/`coveredInstructions` to `MissedLines`/`CoveredLines` (and the record's doc
    comment reframed to match). This port's coverage adapter is Coverlet → **Cobertura line** counters,
@@ -68,6 +84,17 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
    **naming counterpart** to the already-approved coverage-granularity change (risk **R1**; see the
    Coverage row under "## Locked choices") — **not** a new behavioral departure: the `CoveragePercent`
    algorithm is byte-identical modulo the rename, and observable metrics/CRAP outputs are unaffected.
+5. **Exclude C# build output** — `SourceFileFinder` omits any file under a path segment named exactly
+   `bin` or `obj` (case-sensitive, segment-exact, at **any** depth beneath `src`; `Robin`/`object` are
+   kept). Java's Maven `src` tree never holds build output (that lives under `target/`), so the Java
+   finder needed no such filter; in C#, `bin`/`obj` are the analog of `target/` and contain
+   compiler-generated `.cs` (`GlobalUsings.g.cs`, `AssemblyInfo.cs`, `.AssemblyAttributes.cs`,
+   source-generator output). This filter is **load-bearing**: crap4csharp itself runs `dotnet test`
+   (T12), which populates `bin`/`obj`, so without it generated methods would enter the analysis set and
+   skew CRAP. This is a **departure that affects the analysis set** (unlike #3), yet it is faithful to
+   Java's *intent* (analyze human-authored `src`). It deliberately does **not** exclude checked-in
+   generated files (`*.g.cs`/`*.Designer.cs`) that live under normal source folders — Java analyzed
+   generated `.java` under `src` too, so broadening the filter would break parity.
 
 ## Cyclomatic complexity — authoritative node set
 

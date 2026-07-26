@@ -165,6 +165,24 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   explicit but does not perform the mapping — keep it on T10's plate alongside the FQN-normalization pin
   (R3).
 
+### Carry-forward watch-items (from Anders's T7 review — must be honored at the noted task)
+
+- **W12 — AllSrc + directory-arg expansion must route through `SourceFileFinder` (T14).** Java calls
+  `findAllJavaFilesUnderSrc` in **two** places: `ALL_SRC` mode and expanding an explicit **directory**
+  argument (`CliApplication.explicitFiles`). T14 must send both through `SourceFileFinder` (not a
+  re-enumeration), or the bin/obj build-output exclusion won't hold end-to-end.
+- **W13 — Generated-code skew watch (T9/T11/T12).** The finder excludes `bin`/`obj` but intentionally
+  **keeps** checked-in `*.g.cs`/`*.Designer.cs` under normal source folders (fidelity — Java analyzed
+  generated `.java` under `src` too). Because T12 runs `dotnet test`, which **repopulates** `bin`/`obj`,
+  confirm T9/T11 consume the finder's filtered list so freshly-generated build output never reaches the
+  parser and skews CRAP. If checked-in generated files later prove to distort scores, escalate as a
+  product call — do **not** silently broaden the exclusion (that breaks Java parity). Recorded as
+  departure #5 in `docs/decisions.md`.
+- **W14 — Private fields use `_camelCase` (T9).** `ComplexityWalker` needs a private mutable complexity
+  counter; make it `_complexity` (or similar `_camelCase`). It is CA1707-exempt and Release-clean, and
+  `_camelCase` is the `.editorconfig`-configured style. See the **C2 clarification** in
+  `docs/decisions.md`; don't repeat T7's avoidance of a private field.
+
 ### Open decision for Mr. Das (from T5, design-lane)
 
 - **D-T5 — CA1062 `ArgumentNullException.ThrowIfNull` idiom.** *(RESOLVED — Mr. Das ruled
