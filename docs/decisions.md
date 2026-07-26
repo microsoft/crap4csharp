@@ -61,6 +61,13 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
    numerically comparable** to `crap4java` on code using the modern constructs.
 3. **Determinism/idiom** — nullable reference types enabled; `InvariantCulture` + explicit `"\n"` in
    the report.
+4. **Line-based coverage field names** — `CoverageData`'s counter fields are renamed from crap4java's
+   `missedInstructions`/`coveredInstructions` to `MissedLines`/`CoveredLines` (and the record's doc
+   comment reframed to match). This port's coverage adapter is Coverlet → **Cobertura line** counters,
+   not JaCoCo `INSTRUCTION` counters, so "instruction" terminology has no referent here. This is the
+   **naming counterpart** to the already-approved coverage-granularity change (risk **R1**; see the
+   Coverage row under "## Locked choices") — **not** a new behavioral departure: the `CoveragePercent`
+   algorithm is byte-identical modulo the rename, and observable metrics/CRAP outputs are unaffected.
 
 ## Cyclomatic complexity — authoritative node set
 

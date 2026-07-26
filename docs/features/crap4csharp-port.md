@@ -114,12 +114,11 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
 
 ### Carry-forward watch-items (from Anders's T2 review — must be honored at the noted task)
 
-- **W1 — CoverageData field naming → for Mr. Das before T10.** Anders recommends renaming
+- **W1 — CoverageData field naming.** *(RESOLVED — Mr. Das ruled RENAME.)* Fields renamed
   `MissedInstructions`/`CoveredInstructions` → `MissedLines`/`CoveredLines` (accurate for the
-  line-counter Cobertura adapter; the JaCoCo "instruction" concept has no referent here). It's a
-  semantic departure driven by the adapter swap, so it belongs in the departure register — a soft
-  escalation. **Not on the T3/T4/T5 path; only T10 constructs `CoverageData`.** To be ruled at the
-  S2 boundary.
+  line-counter Cobertura adapter; the JaCoCo "instruction" concept has no referent here). Recorded as
+  **departure #4** in `docs/decisions.md`; landed in the W1 rename commit (Dave code + Anders register
+  line, Bhaskar-verified 16/16).
 - **W2 — T5 must decompose `CliArguments` assertions.** C# records use *reference* equality on the
   `IReadOnlyList<string> FileArgs` member (unlike Java's structural `List.equals`), so T5 tests must
   assert `Mode` and `FileArgs` **separately** (`FileArgs.Should().Equal(...)`), never whole-record
@@ -159,12 +158,20 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   prints `ex.Message`, T14 should assert **stderr** contains `--changed cannot be combined with file
   arguments`. The parser tests correctly assert only the exception *type* (parity); the message
   assertion belongs at the T14 integration seam.
+- **W11 — T10 must derive line counters, not read them ready-made (Anders, W1 review).** Cobertura
+  emits per-line `hits`, not aggregate missed/covered per method. `CoberturaCoverageParser` (T10) must
+  compute, within each method's line span, `CoveredLines = count(lines with hits > 0)` and
+  `MissedLines = count(lines with hits == 0)` (missed = valid − covered). The rename makes the intent
+  explicit but does not perform the mapping — keep it on T10's plate alongside the FQN-normalization pin
+  (R3).
 
 ### Open decision for Mr. Das (from T5, design-lane)
 
-- **D-T5 — CA1062 `ArgumentNullException.ThrowIfNull` idiom.** Public API surfaces carry analyzer-forced
-  null guards (suppressions banned). Java's implicit NPE-on-null becomes a typed `ArgumentNullException`
+- **D-T5 — CA1062 `ArgumentNullException.ThrowIfNull` idiom.** *(PENDING — Mr. Das asked to clarify
+  before ruling; does NOT block S3.)* Public API surfaces carry analyzer-forced null guards
+  (suppressions banned). Java's implicit NPE-on-null becomes a typed `ArgumentNullException`
   (⊂ `ArgumentException`) — behavior-preserving, fail-fast-consistent, unreachable on the real
-  `Main(string[])` path. Anders + Bhaskar lean: log **one** standing-policy line in `docs/decisions.md`
-  (the pattern will recur across T6–T16), or declare it below the departure threshold. **Ruling needed
-  before S3** so the idiom is settled project-wide. (JARVIS does not edit `decisions.md` unilaterally.)
+  `Main(string[])` path. Dave continues writing the CA1062-required guards exactly as analyzers demand
+  (code is identical either way). The ONLY open item is whether to add a **standing-policy line** to
+  `docs/decisions.md`; JARVIS will not write it until Mr. Das rules. (JARVIS does not edit
+  `decisions.md` unilaterally.)
