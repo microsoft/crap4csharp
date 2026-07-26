@@ -1,0 +1,50 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Product>crap4csharp</Product>
+    <AssemblyName>Microsoft.$(MSBuildProjectName)</AssemblyName>
+    <RootNamespace>Microsoft.$(MSBuildProjectName.Replace(" ", "_"))</RootNamespace>
+    <Copyright>(c) Microsoft</Copyright>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <WarningLevel>4</WarningLevel>
+    <!-- Maximum code analysis -->
+    <AnalysisLevel>latest-all</AnalysisLevel>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <RunAnalyzersDuringBuild>true</RunAnalyzersDuringBuild>
+    <RunAnalyzersDuringLiveAnalysis>true</RunAnalyzersDuringLiveAnalysis>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!-- Warnings in Debug, Errors in Release -->
+    <TreatWarningsAsErrors Condition="'$(Configuration)' == 'Release'">true</TreatWarningsAsErrors>
+    <TreatWarningsAsErrors Condition="'$(Configuration)' == 'Debug'">false</TreatWarningsAsErrors>
+    <WarningsAsErrors Condition="'$(Configuration)' == 'Release'">*;Nullable</WarningsAsErrors>
+    <!-- NU1900: NuGet could not reach a vulnerability-audit source (offline/agentic dev). A
+         connectivity warning, not a real vulnerability (NU1901-NU1904 still surface), so it must not
+         fail the warnings-as-errors Release build. -->
+    <NoWarn>$(NoWarn);NU1900</NoWarn>
+    <!-- Deterministic restore so the FluentAssertions [7.0.0,8.0.0) pin can never drift to v8. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- .NET code-quality analyzers -->
+    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="9.0.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <!-- StyleCop analyzers (rules tuned in .editorconfig) -->
+    <PackageReference Include="StyleCop.Analyzers" Version="1.2.0-beta.556">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+    <!-- Security analyzers -->
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="3.3.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>

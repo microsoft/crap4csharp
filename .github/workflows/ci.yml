@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [master, "vibe/**"]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore crap4csharp.sln
+
+      - name: Build (Release, warnings-as-errors)
+        run: dotnet build crap4csharp.sln --configuration Release --no-restore
+
+      - name: Test (with coverage)
+        run: >
+          dotnet test crap4csharp.sln --configuration Release --no-build
+          --collect:"XPlat Code Coverage" --results-directory coverage
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-cobertura
+          path: coverage/**/coverage.cobertura.xml
+          if-no-files-found: ignore

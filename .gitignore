@@ -1,0 +1,41 @@
+## .NET build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+project.lock.json
+
+## Lock files are committed (deterministic restore) — do NOT ignore packages.lock.json
+
+## IDEs
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.idea/
+*.sln.iml
+
+## Test / coverage output
+[Tt]est[Rr]esult*/
+TestResults/
+coverage/
+coverage*.json
+coverage*.xml
+coverage*.info
+*.coverage
+*.coveragexml
+
+## OS / misc
+*~
+*.tmp
+*.log
+
+## Local scratch / session notes (never commit)
+scratch/
