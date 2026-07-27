@@ -63,6 +63,29 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
     members + public test methods), **not** private fields; do not avoid a private field for fear of a
     CA1707 conflict.
 
+## Frozen reciprocal contract — `TypeName` canonical form (T9 ⇄ T10 ⇄ T11)
+
+**FROZEN (T9 review, Anders).** The per-method coverage-lookup key `MethodDescriptor.TypeName` (the
+"Coverage key" locked choice, elaborated) has exactly **one** canonical spelling that **both**
+producers must emit byte-for-byte, so T11's exact-match keys align. This is **load-bearing**: any drift
+on either side silently breaks coverage attribution (affected methods fall through to `N/A`).
+
+- **Form:** dotted-namespace FQN of the enclosing type, then `.`, then the containing-type chain joined
+  by `.` (outermost → innermost). **Each** type level that declares N type parameters carries a
+  per-level backtick arity suffix `` `N `` (arity 0 ⇒ no suffix). A type in the **global namespace**
+  yields the **bare** type chain (no leading `.`, no namespace prefix).
+- **Canonical examples:** `Demo.Sample`; `Demo.Outer.Inner`; ``Demo.Container`1``;
+  ``Demo.Outer`1.Inner`2``; bare `Sample` (global namespace).
+- **Producer 1 — `CSharpMethodParser.TypeNameOf` (T9, emit):** builds it from the syntax tree
+  (`BaseNamespaceDeclarationSyntax` ancestor chain + `TypeDeclarationSyntax` ancestor chain, per level
+  `TypeParameterList.Parameters.Count`). **Pinned** by `CSharpMethodParserTests` — all five forms above.
+- **Producer 2 — `CoberturaCoverageParser.NormalizeTypeName` (T10, produce):** must normalize the
+  coverlet `class name=` attribute to this **same** form — nested separators (`/` or `+`) → `.`,
+  **keep** the backtick arity, bare-ify the global namespace — and must be **pinned against a real
+  coverlet sample** (R3). See watch-item **W-T9a**.
+- **Consumer — `CrapAnalyzer` (T11):** builds coverage-map / method-lookup keys from this form. Do not
+  change one producer without the other.
+
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
 1. **Fail fast** — when a module produces no coverage / runs no tests, exit non-zero (`1`) with a

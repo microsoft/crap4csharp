@@ -1,6 +1,6 @@
 # Feature: crap4csharp — faithful C# port of crap4java
 **Branch:** vibe/crap4csharp-port
-**Status:** In progress — **S3 adapters + module-root landed** (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 next commit); 39 tests green, 0/0 Release. **T9/T10 blocked on Mr. Das** (D-T9, D-T10a); paused at the S3 boundary for rulings.
+**Status:** In progress — **S3 nearly complete** (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 `e4d1329`, B1 ratify `d0784b3`, T9 next commit); 56 tests green, 0/0 Release. T9 parser landed; **T10 (`CoberturaCoverageParser`) in flight** — the last S3 task. Then S4.
 
 ## Requirements
 
@@ -52,11 +52,11 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T6  | S3 | `ICommandExecutor` + `ProcessCommandExecutor` + tests | Done | `da02028` |
 | T7  | S3 | `SourceFileFinder` (`src/**/*.cs`, exclude `bin`/`obj`, ordinal sort) + tests | Done | `1b90d24` |
 | T8  | S3 | `ChangedFileDetector` (git porcelain) + integration tests | Done | `c023ef8` |
-| T9  | S3 | `CSharpMethodParser` + `ComplexityWalker` (augmented node set) + CC oracle tests | Pending | - |
+| T9  | S3 | `CSharpMethodParser` + `ComplexityWalker` (augmented node set) + CC oracle tests | Done | `(next commit)` |
 | T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Pending | - |
 | T11 | S4 | `CrapAnalyzer` (exact→nearest-line lookup, per-method `TypeName`) + tests | Pending | - |
 | T12 | S4 | `CoverageRunner` (`dotnet test --collect`) + `CoverageReportLocator` + tests | Pending | - |
-| T13 | S4 | `ModuleRootResolver` (nearest `.sln` → `.csproj` → root) + tests | Done | `(next commit)` |
+| T13 | S4 | `ModuleRootResolver` (nearest `.sln` → `.csproj` → root) + tests | Done | `e4d1329` |
 | T14 | S4 | `CliApplication` + tests; **fail-fast gate** (no-coverage/empty-report → exit 1) | Pending | - |
 | T15 | S4 | `Program` entry (+ `CoverageException`) + integration tests (spawn built exe) | Pending | - |
 | T16 | S4 | README usage section + end-to-end smoke (positive + negative fail-fast) | Pending | - |
@@ -235,6 +235,31 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   faithful form `Directory.Exists(full) ? full : (Path.GetDirectoryName(full) ?? full)` and add a
   nonexistent-leaf test (no current test exercises this).
 
+### Carry-forward watch-items (from Anders's T9 review — must be honored at the noted task)
+
+- **W-T9a — T10 `NormalizeTypeName` must yield the frozen `TypeName` form.** `CoberturaCoverageParser`
+  must normalize the coverlet `class name=` attribute to the **frozen reciprocal form** recorded in
+  `docs/decisions.md` ("Frozen reciprocal contract — `TypeName` canonical form"): coverlet nested
+  separators (`/` **or** `+`) → `.`, **keep** the per-level backtick arity (`` `1 ``, `` `2 ``),
+  bare-ify the global namespace. This is the exact string `CSharpMethodParser.TypeNameOf` (T9) emits and
+  is already pinned by `CSharpMethodParserTests`. **Pin `NormalizeTypeName` against a real coverlet
+  sample** (R3) — do not hand-fabricate the expected class attribute. Load-bearing: any mismatch drops
+  the method to `N/A`.
+- **W-T9b — T10 must skip compiler-generated class & method names.** Coverlet reports lambdas, local
+  functions, iterators/async state machines, property accessors and constructors under synthesized
+  names. `CoberturaCoverageParser` must **ignore** entries whose class **or** method name is
+  compiler-generated — at minimum: any name containing `<...>` (display/state-machine classes and
+  `<Name>b__n` lambda methods), `get_`/`set_` accessors, `.ctor`/`.cctor`, `MoveNext`, and `b__`
+  helpers — so only human-authored members (the ones `CSharpMethodParser` collects) are matched. Mirrors
+  R3's "generated names must be normalized/ignored." Pin against the same real coverlet sample as W-T9a.
+- **W-T9c — Coverage-map key shape (recommended) for T11 lookup alignment.** Recommended map key is
+  `NormalizeTypeName(class)#method@name:line` (type FQN in the frozen form + `#` + method name + line),
+  so T11's **exact** match keys off `TypeName#Name:line`. T11's **nearest-line** fallback prefix must
+  stay **method-scoped** — `TypeName#Name:` — so a fallback never crosses into a different method or
+  overload. Keep the separators (`#`, `@`, `:`) out of any identifier that can legally contain them
+  (none can), so the key stays unambiguous. Reconfirm the exact key shape when T10/T11 land; the binding
+  invariant is that emit (T9), produce (T10) and consume (T11) share the frozen `TypeName` form.
+
 ### Open decision for Mr. Das (from T5, design-lane)
 
 - **D-T5 — CA1062 `ArgumentNullException.ThrowIfNull` idiom.** *(RESOLVED — Mr. Das ruled
@@ -242,12 +267,15 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   logged departure: **no** standing-policy line is added to `docs/decisions.md`. Dave continues writing
   the CA1062-required guards exactly as before (code unchanged); Bhaskar/Anders treat them as
   non-noteworthy going forward.
-- **D-T9 — Parser plumbing / signature (non-1:1).** *(OPEN — escalated to Mr. Das.)* Drop
+- **D-T9 — Parser plumbing / signature (non-1:1).** *(RESOLVED — Mr. Das ruled **Option A**: drop both
+  plumbing methods + their 2 tests; adopt `Parse(string source)`. Shipped in T9; Anders-reviewed 🟢.)*
+  Drop
   `JavaMethodParser.sourcePath`/`sourceUri` and their 2 tests (`buildsSourcePathAndUriFromClassNames`,
   `acceptsClassNamesWithJavaSuffix`) as javac file-URI plumbing with no Roslyn referent, and adopt
   `Parse(string source)` (drops the vestigial `className`). Anders recommends **Option A (drop both)**;
-  the 7 remaining Java parser tests port as faithful behavioral counterparts. **Blocks T9** (parser
-  signature + test set depend on the ruling). Design-lane FYIs (Anders, vetoable): collection scope =
+  the 7 remaining Java parser tests port as faithful behavioral counterparts. **Unblocked T9** (parser
+  signature + test set followed the ruling; 17 tests = 7 faithful ports + 10 new, 56/56 green).
+  Design-lane FYIs (Anders, vetoable): collection scope =
   methods only; expression-bodied methods included; nested-type class-name format is a T10 pin.
 - **D-T8 — Integration-test categorization / fast-loop scope (agentic-loop policy).** *(OPEN —
   escalated to Mr. Das; JARVIS to route at the S3 boundary.)* `.github/skills/build-test.md` promises
