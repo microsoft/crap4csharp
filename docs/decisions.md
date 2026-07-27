@@ -239,8 +239,9 @@ with no Java counterpart (JaCoCo's report path was a fixed constant, so Java nee
   departure #7; the coverage-command failure throws with the byte-identical message
   `"Coverage command failed with exit N"` (D-T12d) — originally the `IllegalStateException` →
   `InvalidOperationException` analog (C1, as in `CoberturaCoverageParser`), but **retyped at T15
-  (ruling A) to the domain `CoverageException`** (message unchanged) so `Program.Main` can catch it
-  specifically (D-T15b). The T12/T14 fail-fast boundary is unchanged: T12
+  (ruling A) to the domain `CoverageException`** (message unchanged) so `Program.Main` could catch it
+  specifically (D-T15b) — **broadened at T20** to a top-level `catch (Exception)`; `CoverageException`
+  is retained and now caught by the broad catch, same anchor (see the T20 register). The T12/T14 fail-fast boundary is unchanged: T12
   **throws** on command failure (faithful) and **returns `null`** when the report is absent (the new
   locate signal); every exit-code decision (departure #1) stays in T14.
 
@@ -269,8 +270,8 @@ beyond the already-approved set #1–#8.**
   coverage data`** → exit 1 — trigger 2 must inspect **`coverageMap.Count`, not the metrics** (a
   populated-but-non-matching report also yields all-`N/A` metrics yet must NOT fail-fast). (3)
   `CoverageRunner.GenerateCoverage` throws `CoverageException` → **propagates** (anchor **`Coverage
-  command failed with exit`**), realized as exit 1 at T15 via the specific `catch (CoverageException)`
-  in `Program.Main` (ruling A / D-T15b). Mr. Das ruled the trigger 1/2 wording to these defaults; tests
+  command failed with exit`**), realized as exit 1 via `Program.Main`'s top-level `catch (Exception)`
+  (broadened in T20; same `"Coverage command failed with exit"` anchor). Mr. Das ruled the trigger 1/2 wording to these defaults; tests
   assert only the bold anchor substring, so wording may re-tune without touching test structure.
 
 - **D-T14c — double-parse LOCKED (option A); the `Analyze(map)` overload is DEFERRED.** T14 calls
@@ -291,7 +292,11 @@ beyond the already-approved set #1–#8.**
   the **identical** observable behavior (full `ex` to stderr + exit 1) while keeping the entry-point
   catch least-privilege / CA1031-clean with **no** suppression. The load-bearing invariant is unchanged:
   `Execute` keeps propagating and `Program.Main` MUST catch to guarantee exit 1. (T15 shipped;
-  `Program.cs` is no longer a stub.)
+  `Program.cs` is no longer a stub.) **T20 addendum** — `Program.Main` is re-broadened to a top-level
+  `catch (Exception)` catch-all under a scoped `[Program.cs]` CA1031 `.editorconfig` relaxation
+  (justification-commented; no `#pragma`/`[SuppressMessage]`); the load-bearing invariant (`Execute`
+  propagates; `Program.Main` catches → exit 1) is **preserved and generalized to all exceptions**, not
+  just `CoverageException` — full Java `main throws Exception` parity.
 
 - **Below the departure bar (no departure number, no ruling needed).** `MaxCrap`/`ThresholdExceeded`/
   `Usage` are housed on `CliApplication` (T14), not on `Program` (T15) as Java put `maxCrap`/`usage` on
@@ -326,7 +331,14 @@ adds no logic of its own. **No new behavioral departure beyond the already-appro
   on .NET (which does **not** guarantee it for an unhandled exception), so **both** ends are load-bearing:
   `Execute` must not start catching, and `Program.Main` must not stop catching. The typed catch is
   CA1031-clean with **no** `.editorconfig` entry / suppression, **superseding the T14-planned bare
-  `catch`** (D-T14d). Mr. Das's register wording, verbatim: "introduce `CoverageException` to enable a
+  `catch`** (D-T14d). **Superseded for `Program.cs` by T20** — `Program.Main` now uses a top-level
+  `catch (Exception) → Console.Error.WriteLine(ex) → return 1`, licensed by a scoped `[Program.cs]`
+  CA1031 `.editorconfig` relaxation (justification-commented; **no** `#pragma`/`[SuppressMessage]`).
+  `CoverageException` is **retained** — `CoverageRunner` still throws it with the byte-identical
+  `"Coverage command failed with exit N"` anchor, now caught by the broad catch (no behavioral loss, no
+  message change). The load-bearing invariant is unchanged and generalized: `Execute` keeps propagating;
+  `Program.Main` now converts **every** escaping exception (not just `CoverageException`) to exit 1 —
+  full parity with Java `main throws Exception`. Mr. Das's register wording, verbatim: "introduce `CoverageException` to enable a
   least-privilege specific catch (CA1031-clean, no suppression); observable behavior unchanged (stderr +
   exit 1), so not a behavioral departure — **supersedes D2**." (Here "D2" = the T14-planned bare-catch
   mechanism recorded in D-T14d, **not** the feature-doc deferral "D2 = O2 subprocess timeout".)
@@ -360,7 +372,62 @@ adds no logic of its own. **No new behavioral departure beyond the already-appro
     surfaces a **real coverlet** report (well-formed by construction), so this path is **untested and
     practically unreachable**. It is a deliberate below-threshold consequence of the typed catch, **not**
     a new behavioral departure (the reachable observable behavior — stderr + exit 1 on a coverage-command
-    failure — is unchanged from the bare-catch plan).
+    failure — is unchanged from the bare-catch plan). **Resolved by T20** — the broad top-level
+    `catch (Exception)` in `Program.Main` **does** convert these paths (malformed-XML / parser / git /
+    I/O throws) to exit 1; the narrowing consequence no longer exists.
+
+## T20 register — exit-code parity (S6 close-out; Anders T20 review, 🟢)
+
+Resolved decisions and load-bearing invariants from the entry-point exit-code hardening. T20 broadens
+`Program.Main`'s catch from the specific `catch (CoverageException)` (T15 / ruling A) to a top-level
+`catch (Exception) → Console.Error.WriteLine(ex) → return 1`, licensed by a scoped `[Program.cs]`
+CA1031 `.editorconfig` relaxation. **Not a new behavioral departure — it RESTORES Java parity**
+(`main throws Exception`: the JVM already exits non-zero on any escaping exception; the pre-T20 escape
+of a non-`CoverageException` throw as a platform-specific unhandled-exception code was the deviation).
+Supersedes ruling A / D-T15b **for `Program.cs` only** (Mr. Das). **No new behavioral departure beyond
+the already-approved set #1–#8.**
+
+- **D-T20a — CLOSES the S6 clean-room "fatal exit-code consistency" finding.** Pre-T20 `Program.Main`
+  caught **only** `CoverageException`, so a `git` failure (under `--changed`), an I/O error, or a
+  malformed-coverage-XML / parser throw **escaped** and surfaced as a platform-specific
+  unhandled-exception exit code instead of the documented `1`. The broad `catch (Exception)` converts
+  **every** escaping exception to exit 1 (full exception — type + message + stack — to stderr via
+  `Console.Error.WriteLine(ex)`, ruling B). `CoverageException` is **retained** — `CoverageRunner` still
+  throws it with the byte-identical `"Coverage command failed with exit N"` anchor, now caught by the
+  broad catch (no behavioral loss, no message change).
+
+- **D-T20b — scoped `[Program.cs]` CA1031 relaxation (LOAD-BEARING; ratified convention).** T20 appends
+  a trailing `[Program.cs]` section to `.editorconfig` — the **first single-filename (per-file) section
+  in the repo**; every prior section is a glob/extension pattern (`[*]`, `[*.md]`, `[*.{cs,vb}]`, …) and
+  the C# analyzer settings it overrides live in the global `[*.{cs,vb}]` block. EditorConfig has no
+  CSS-style specificity — later matching sections win by **order**, so the trailing per-file section
+  deterministically overrides the global block for the single `src/Crap4CSharp/Program.cs` (top-level
+  statements are disabled, so no generated/duplicate `Program.cs` exists). The section carries a
+  justification comment and sets `dotnet_diagnostic.CA1031.severity = none`. **Ratified convention:**
+  license a legitimate, localized analyzer violation via a narrowly-scoped, commented `.editorconfig`
+  section — **never** `#pragma` / `[SuppressMessage]`. This is the sole sanctioned catch-all; no other
+  file is affected.
+
+- **D-T20c — the exit-code matrix is reaffirmed (D-T14a still owns the 0/1/2 table).** `Program.Main`'s
+  `try` returns `CliApplication.Execute(args)` **verbatim**; the `catch (Exception)` intercepts **only
+  thrown** exceptions. Two invariants: **(I1)** no deliberate exit code is clobbered — every NORMAL
+  RETURN (0 / 1 fail-fast / **2 threshold-exceeded**) flows through the `try` and is returned unchanged;
+  **threshold-2 stays a normal return, never swallowed to 1**. **(I2)** every genuinely-thrown /
+  propagated failure → 1 (pre-T20 only the `CoverageException` throw converted; now all THROWN paths —
+  git / I/O / parser / coverage-command — convert). Pinned by the new spawn test
+  `MainProcessExitsOneWhenGitFailsForChanged` (`--changed` in a hermetic non-git temp cwd →
+  `ChangedFileDetector` throws `InvalidOperationException("git status failed: …")` → catch-all → exit 1;
+  git isolation via `GIT_CEILING_DIRECTORIES` set once in the shared `RunEntryPointAsync` helper). The
+  `Execute`-level exit-2 pin (`CliApplicationTests` #12 `ReturnsTwoWhenCrapThresholdExceeded`) is
+  unchanged.
+
+- **D-T20d — NOT a new departure (no departure #9).** T20 **restores** Java's `main throws Exception`
+  "any failure → non-zero" contract rather than departing from it, so there is **no** new departure
+  number and **no** edit to departure #1 or its exit table (D-T14a); departures #1–#8 are untouched. A
+  future reader should **not** expect a departure entry for T20 — the reconciliation lives in the amended
+  T14/T15 registers (D-T14b / D-T14d / D-T15b / D-T15e) and this T20 register. **D-T15a preserved** —
+  `Program` stays a thin, seam-less entry point (no `Run` method); the catch-all parity path is exercised
+  end-to-end through the real entry point by the spawn test, needing no injection seam.
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 

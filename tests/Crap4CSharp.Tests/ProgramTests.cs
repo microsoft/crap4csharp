@@ -33,6 +33,22 @@ public class ProgramTests
         result.StandardError.Should().Contain("--changed cannot be combined with file arguments");
     }
 
+    // T20 -- the catch-all parity path: `--changed` in a fresh, non-git temp cwd makes ChangedFileDetector
+    // run `git status`, which fails (not a repository) and throws a NON-CoverageException
+    // (InvalidOperationException). That propagates out of CliApplication.Execute and MUST be converted by
+    // Program.Main's top-level catch-all to exit 1, with the full exception written to stderr. This closes
+    // the S6 clean-room "fatal exit-code consistency" finding (git / I/O / parser failures -> exit 1, not a
+    // platform-specific unhandled-exception code). GIT_CEILING_DIRECTORIES (set in RunEntryPointAsync) makes
+    // the git failure deterministic on every dev box and CI OS. No coverage run is ever reached (D-T15e).
+    [Fact]
+    public async Task MainProcessExitsOneWhenGitFailsForChanged()
+    {
+        SpawnResult result = await RunEntryPointAsync("--changed");
+
+        result.ExitCode.Should().Be(1);
+        result.StandardError.Should().Contain("git status failed");
+    }
+
     private static async Task<SpawnResult> RunEntryPointAsync(params string[] args)
     {
         // The app is a ProjectReference of the test project, so its DLL is copied next to the test assembly;
@@ -57,6 +73,13 @@ public class ProgramTests
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
+
+            // Hermetic git isolation (T20): the --changed spawn test runs `git status` in this fresh temp
+            // cwd; capping git's repo-discovery walk at the temp parent guarantees it is NEVER seen as a git
+            // repo (even on a dev box whose home dir is itself a repo), so git exits non-zero deterministically
+            // -> ChangedFileDetector throws -> Program.Main's catch-all -> exit 1. Harmless for the non-git
+            // spawn paths (--help / parse-error), which never invoke git.
+            startInfo.Environment["GIT_CEILING_DIRECTORIES"] = Directory.GetParent(workingDirectory)!.FullName;
             startInfo.ArgumentList.Add(appDll);
             foreach (string arg in args)
             {
