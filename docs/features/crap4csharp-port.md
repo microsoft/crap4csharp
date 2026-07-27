@@ -35,8 +35,9 @@ the augmented complexity node set, and approved deliberate departures are in `do
 | S2 | Pure core (CRAP formula, report, CLI parse, domain types) with parity tests | S1 |
 | S3 | Ecosystem adapters (process exec, file finders, Roslyn parser, Cobertura parser) with parity tests | S1 |
 | S4 | Composition + CLI wiring + fail-fast + end-to-end | S2, S3 |
-| S5 | Independent clean-room evaluation: a neutral evaluator on gpt-5.6-sol judges the delivered port against the VERBATIM original Requirements block (report-only) | S4 |
-| S6 | Real-world dogfooding: run the finished crap4csharp on three real C# repos — crap4csharp, mutate4csharp, dry4csharp — producing actual CRAP reports | S4, S5 |
+| S5 | Module & test resolution finalization: resolve the file→module→test resolution model (Anders presents options a/b/c; Mr. Das rules), then implement the chosen model — rework T13 `ModuleRootResolver` and shape T12/T14 as needed | S4 |
+| S6 | Independent clean-room evaluation: a neutral evaluator on gpt-5.6-sol judges the delivered port against the VERBATIM original Requirements block (report-only) | S5 |
+| S7 | Real-world dogfooding: run the finished crap4csharp on three real C# repos — crap4csharp, mutate4csharp, dry4csharp — producing actual CRAP reports | S6 |
 
 ## Tasks (Tx)
 
@@ -60,8 +61,9 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T14 | S4 | `CliApplication` + tests; **fail-fast gate** (no-coverage/empty-report → exit 1) | Pending | - |
 | T15 | S4 | `Program` entry (+ `CoverageException`) + integration tests (spawn built exe) | Pending | - |
 | T16 | S4 | README usage section + end-to-end smoke (positive + negative fail-fast) | Pending | - |
-| T17 | S5 | Independent evaluation on gpt-5.6-sol. Neutral sub-agent (NOT Anders/Dave/Bhaskar). Inputs = verbatim `## Requirements` block + read the delivered port + crap4java ONLY; must NOT read `docs/decisions.md`, rest of `docs/features`, `.github` playbook/agents, or any rationale. Report-only verdict to Mr. Das. | Pending (deferred) | - |
-| T18 | S6 | Dogfood crap4csharp on crap4csharp + `../mutate4csharp` + `../dry4csharp`; capture CRAP reports; summarize crappy methods to Mr. Das. | Pending (deferred) | - |
+| T17 | S5 | Module & test resolution finalization: Anders presents options — (a) keep the locked `.sln`-first model / (b) adopt mutate4csharp's nearest-`.csproj` owning project + `<Project>.Tests`/`<Project>.UnitTests` test-project resolution / (c) hybrid — per `../mutate4csharp` README §"Module & Test Resolution"; Mr. Das rules; then implement the chosen model — rework `ModuleRootResolver` (T13) and shape T12/T14. Keep running ALL module tests (crap4java parity); do NOT adopt unit-only `[Trait]` filtering. | Pending (deferred) | - |
+| T18 | S6 | Independent evaluation on gpt-5.6-sol. Neutral sub-agent (NOT Anders/Dave/Bhaskar). Inputs = verbatim `## Requirements` block + read the delivered port + crap4java ONLY; must NOT read `docs/decisions.md`, rest of `docs/features`, `.github` playbook/agents, or any rationale. Report-only verdict to Mr. Das. | Pending (deferred) | - |
+| T19 | S7 | Dogfood crap4csharp on crap4csharp + `../mutate4csharp` + `../dry4csharp`; capture CRAP reports; summarize crappy methods to Mr. Das. | Pending (deferred) | - |
 
 Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 and T6/T7/T8/T13 parallelize early.
 
@@ -78,7 +80,7 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
 - R5: FluentAssertions v8 licensing — the `[7.0.0,8.0.0)` pin + lock file must hold.
 - R6: crap4csharp requires each target to have a test project referencing `coverlet.collector` and a
   resolvable module root (`.sln`), else fail-fast fires. `mutate4csharp`/`dry4csharp` may not satisfy
-  this and cannot be modified in place — S6 may surface tool gaps or need target prerequisites handled
+  this and cannot be modified in place — S7 may surface tool gaps or need target prerequisites handled
   on the copies. (Noted, not solved now.)
 
 ## Assumptions (Ax)
@@ -333,14 +335,41 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   arity **kept**, global namespace bare. Discharged by test 11 (D-table) + test 10 (real coverlet
   forms). The load-bearing frozen-reciprocal property is preserved byte-for-byte.
 
-### S5/S6 finale — design constraints (design-lane)
+### S5/S6/S7 finale — design constraints (design-lane)
 
+- **D-S5 (design — deferred to when S5 runs; options-only now):** S5 finalizes the
+  file→module→test resolution model before the port is "done-done" and before the real-world slices
+  (S6 eval / S7 dogfood). The port keeps driving on the **locked `.sln`-first model** (decisions.md
+  "Module root" locked choice + departure #6; T13 shipped `e4d1329`) through S3→S4; **S5 is the only
+  place the model is revisited/decided/reworked — do NOT change T13 or the resolution model before
+  S5.** Reference for writing the options faithfully: `../mutate4csharp` README §"Module & Test
+  Resolution" (READ-ONLY sibling — do not write there).
+  - **Options Anders presents / Mr. Das rules on WHEN THE SLICE RUNS (not now):** **(a)** keep the
+    locked `.sln`-first model — crap4java §6 parity, T13 as shipped; **(b)** adopt mutate4csharp's
+    model — owning project = nearest `.csproj` above the target `.cs` (file name w/o extension =
+    `<Project>`); test project = `<Project>.Tests.csproj` **or** `<Project>.UnitTests.csproj` whose
+    project references (transitively) include `<Project>.csproj`, and only that project's tests run
+    (fail fast if no owning `.csproj`/test project is found); **(c)** hybrid — `.sln` grouping but
+    borrow the `.Tests`/`.UnitTests` convention to select and run the right test project. Then
+    implement the chosen model: rework `ModuleRootResolver` (T13); shape T12/T14.
+  - **Locked constraint on this slice (Mr. Das already ruled):** do **NOT** adopt mutate4csharp's
+    unit-only `[Trait("type", …)]` filtering (which keeps `UnitTests`/`Unit`/untagged and excludes
+    `IntegrationTests`) — crap4csharp keeps running **ALL** module tests (crap4java parity). This is
+    **distinct** from the separate **open D-T8** agentic-loop fast-loop tagging question, which
+    governs **our own** dev-loop test suite (`[Trait("Category", "Integration")]` on process/CLI
+    tests), **not** how the tool runs a *target's* tests.
+  - **Engineering watch-item (honor during S4):** keep **T12 (`CoverageRunner`)** and **T14
+    (fail-fast gate)** cleanly decoupled **behind the existing `ModuleRootResolver` abstraction**, so
+    the later S5 model swap is cheap — localized to the resolver seam, not spread through T12/T14.
+- **Label-stability note:** the **D-S6** and **R6** labels below are **retained unchanged** for
+  reference stability (Mr. Das still refers to "D-S6/R6"), even though the dogfood slice/task
+  renumbered **S6→S7 / T18→T19**; only their internal slice/task references are updated.
 - **D-S6 (design — resolved):** Per guardrail #2, `../mutate4csharp` and `../dry4csharp` are READ-ONLY
-  sibling repos; `crap4csharp` itself is write-scoped to this repo only. Because S6 runs
-  `dotnet test --collect`, which writes build/coverage artifacts (`bin`/`obj`/`TestResults`), S6 MUST
+  sibling repos; `crap4csharp` itself is write-scoped to this repo only. Because S7 runs
+  `dotnet test --collect`, which writes build/coverage artifacts (`bin`/`obj`/`TestResults`), S7 MUST
   operate on COPIES of each target in a scratch/temp workspace OUTSIDE all source repos (e.g., under
   `%TEMP%`), never writing into the sibling repos or into crap4csharp's own tree. Dogfooding
   crap4csharp-on-crap4csharp likewise runs against a copy to avoid polluting the working tree. This
-  constraint governs T18 execution.
-- Also note the ordering: S6 runs only after everything through S5 is done and pushed (S6 depends on S4
-  and S5).
+  constraint governs T19 execution.
+- Also note the ordering: S7 runs only after everything through S6 is done and pushed (S7 depends on S6,
+  transitively S4/S5).
