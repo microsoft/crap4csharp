@@ -1,6 +1,6 @@
 # Feature: crap4csharp — faithful C# port of crap4java
 **Branch:** vibe/crap4csharp-port
-**Status:** In progress — **S3 nearly complete** (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 `e4d1329`, B1 ratify `d0784b3`, T9 next commit); 56 tests green, 0/0 Release. T9 parser landed; **T10 (`CoberturaCoverageParser`) in flight** — the last S3 task. Then S4.
+**Status:** In progress — **S3 COMPLETE** (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 `e4d1329`, B1 ratify `d0784b3`, T9 `400d49d`, T10 next commit); **68 tests green, 0/0 Release**. All parsers + adapters landed. **Paused at the S3 boundary** for Mr. Das; next slice = S4 (T11 `CrapAnalyzer` → T12 → T14 → T15 → T16).
 
 ## Requirements
 
@@ -52,8 +52,8 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T6  | S3 | `ICommandExecutor` + `ProcessCommandExecutor` + tests | Done | `da02028` |
 | T7  | S3 | `SourceFileFinder` (`src/**/*.cs`, exclude `bin`/`obj`, ordinal sort) + tests | Done | `1b90d24` |
 | T8  | S3 | `ChangedFileDetector` (git porcelain) + integration tests | Done | `c023ef8` |
-| T9  | S3 | `CSharpMethodParser` + `ComplexityWalker` (augmented node set) + CC oracle tests | Done | `(next commit)` |
-| T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Pending | - |
+| T9  | S3 | `CSharpMethodParser` + `ComplexityWalker` (augmented node set) + CC oracle tests | Done | `400d49d` |
+| T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Done | `(next commit)` |
 | T11 | S4 | `CrapAnalyzer` (exact→nearest-line lookup, per-method `TypeName`) + tests | Pending | - |
 | T12 | S4 | `CoverageRunner` (`dotnet test --collect`) + `CoverageReportLocator` + tests | Pending | - |
 | T13 | S4 | `ModuleRootResolver` (nearest `.sln` → `.csproj` → root) + tests | Done | `e4d1329` |
@@ -260,6 +260,23 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   (none can), so the key stays unambiguous. Reconfirm the exact key shape when T10/T11 land; the binding
   invariant is that emit (T9), produce (T10) and consume (T11) share the frozen `TypeName` form.
 
+### Carry-forward watch-items (from Anders's T10 review — must be honored at the noted task)
+
+- **W-T10a — async/iterator coverage-attribution gap (T11 visibility).** Coverlet attributes an
+  `async`/iterator body's coverage to the synthetic state machine (`Outer+<M>d__N`/`MoveNext`), which
+  T10 skips (W-T9b/W-T10c). T9 emits the real `M`, so such methods have no matching coverage entry and
+  resolve to per-method `N/A` in T11 — consistent with departure #1 (**not** a new departure).
+  Async-heavy targets will show more `N/A` than the Java tool; surfaced for Mr. Das's visibility.
+  Recorded in `docs/decisions.md` (T10 register).
+- **W-T10b — accessor-prefix skip false-positive (T11).** The rule-3 `get_`/`set_`/`add_`/`remove_`
+  prefix skip has a negligible false-positive on a real method literally named `get_Foo`
+  (underscored) → `N/A`. Sanctioned by W-T9b; logged.
+- **W-T10c — synthetic `MoveNext` skipped via its containing class (ACCEPTED).** T10 does not
+  blanket-skip `MoveNext` by name; the synthetic one is caught by its angle-bracket state-machine class
+  (rule 1) while a user-authored `IEnumerator.MoveNext` on a real class is kept and attributed. Ratified
+  as the more-faithful reading of W-T9b (not a departure); pinned both ways by test 9
+  (`SkipsSyntheticStateMachineClassButKeepsRealMoveNext`).
+
 ### Open decision for Mr. Das (from T5, design-lane)
 
 - **D-T5 — CA1062 `ArgumentNullException.ThrowIfNull` idiom.** *(RESOLVED — Mr. Das ruled
@@ -303,6 +320,18 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   directory** when no `.sln`/`.csproj` marker is found, vs crap4java's workspace-bounded walk /
   `workspaceRoot` fallback. Recorded as **departure #6** in `docs/decisions.md`; T13 shipped as-is
   (`e4d1329`), no rework. Below the behavioral bar for realistic C# layouts.
+
+- **D-T10a — behavioral XXE test vs. Java's white-box factory-flag test.** *(RESOLVED — ruled: port
+  behaviorally; N10 landed.)* Java's `configuresSecureFactoryFeatures` inspected
+  `DocumentBuilderFactory` flags; the C# port asserts the **observable** guarantee instead — a canary
+  referenced via an external entity is never resolved (`DoesNotResolveExternalEntities`). Mechanism:
+  `XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore, XmlResolver = null }`. Security is
+  identical (resolver-null blocks all external fetches); `Ignore` keeps the DOCTYPE-tolerance test
+  faithful. **Not a new behavioral departure** — see the T10 register in `docs/decisions.md`.
+- **D-T10b — `NormalizeTypeName` keeps the backtick arity.** *(RESOLVED — keep arity.)* The T10
+  normalizer is the mechanical inverse of T9's `TypeNameOf`: nested `/`+`+` → `.`, per-level `` `N ``
+  arity **kept**, global namespace bare. Discharged by test 11 (D-table) + test 10 (real coverlet
+  forms). The load-bearing frozen-reciprocal property is preserved byte-for-byte.
 
 ### S5/S6 finale — design constraints (design-lane)
 

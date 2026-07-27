@@ -85,6 +85,62 @@ on either side silently breaks coverage attribution (affected methods fall throu
   coverlet sample** (R3). See watch-item **W-T9a**.
 - **Consumer — `CrapAnalyzer` (T11):** builds coverage-map / method-lookup keys from this form. Do not
   change one producer without the other.
+- **T10 discharged (Anders T10 review, 🟢).** Producer 2 now emits this form byte-for-byte:
+  `NormalizeTypeName` = `rawClassName.Replace('/', '.').Replace('+', '.')` (backtick arity **kept**),
+  pinned by `NormalizeTypeNameProducesFrozenReciprocalForm` (test 11, D-table) and by the real
+  coverlet strings in `MatchesRealCoverletSampleClassNames` (test 10). See the **T10 register** below.
+
+## T10 register — `CoberturaCoverageParser` (S3 close-out; Anders T10 review, 🟢)
+
+Resolved decisions, R3 closure, and watch-items from the final S3 task. `CoberturaCoverageParser`
+is a faithful port of `JacocoCoverageParser` re-hosted on Coverlet→Cobertura per-method `<line>`
+counters (departure #4). **No new behavioral departure beyond the already-approved set.**
+
+- **D-T10a — behavioral XXE test replaces Java's white-box flag test (RESOLVED).** Java's
+  `configuresSecureFactoryFeatures` inspected `DocumentBuilderFactory` feature flags; the C# port has
+  no equivalent introspection seam, so the faithful counterpart is the **behavioral** test
+  `DoesNotResolveExternalEntities` (N10): a canary file referenced through an internal-subset external
+  entity via `file://` must never be read into the parse. Mechanism —
+  `XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore, XmlResolver = null }` — gives the
+  **observably identical** guarantee (no external DTD/entity/XInclude is ever fetched). `Ignore` (not
+  `Prohibit`) is deliberate: `XmlResolver = null` already blocks every external fetch, and `Ignore`
+  keeps the DOCTYPE-tolerance test (`ParsesXmlWithDoctypeWithoutRequiringLocalDtdFile`) faithful while
+  a malicious `&xxe;` reference still fails safely as an undeclared entity → wrapped
+  `InvalidOperationException`, no file read/network/substitution. This is a **security/fidelity
+  mechanism swap, NOT a new behavioral departure** — no departure number is assigned.
+
+- **D-T10b — `NormalizeTypeName` keeps the backtick generic arity (RESOLVED).** The normalizer is the
+  mechanical inverse of T9's `CSharpMethodParser.TypeNameOf`: nested separators (`/` or `+`) → `.`,
+  per-level `` `N `` arity **kept untouched**, dotted namespace already emitted by coverlet, global
+  namespace already bare. Discharged by `NormalizeTypeNameProducesFrozenReciprocalForm` (test 11, the
+  full D-table) and by the real-sample forms in `MatchesRealCoverletSampleClassNames` (test 10:
+  ``Sample.Outer`1/Inner`2`` → ``Sample.Outer`1.Inner`2``, ``Sample.Container`1`` kept).
+
+- **R3 — real-coverlet normalization pin CLOSED for T10.** Final `NormalizeTypeName` rule:
+  `rawClassName.Replace('/', '.').Replace('+', '.')` — nested `/` **and** `+` → `.`, keep per-level
+  `` `N `` arity, global-namespace chain left bare. Pinned against a **real** coverlet Cobertura sample
+  in test 10 (verbatim `class @name`/`method @name`/`<line>` strings), closing R3's "pin against a real
+  coverlet sample" for the plain-FQN, nested, generic and compiler-generated forms. **Empirical note:**
+  real coverlet emits nested-type separators as `/` (not `+`); `NormalizeTypeName` handles both, so the
+  `+` branch is the defensive path for older tooling / the alternate spelling in the frozen contract.
+
+**Watch-items (T10 review — visibility for Mr. Das; none blocks T10):**
+
+- **W-T10a — async/iterator coverage-attribution gap (instance of R3).** Coverlet attributes an
+  `async`/iterator method's body coverage to the synthetic state machine (`Outer+<M>d__N` / its
+  `MoveNext`), which T10 skips (W-T9b/W-T10c). Since T9 emits the real `M`, such methods have no
+  matching coverage entry and resolve to per-method `N/A` in T11 — consistent with departure #1
+  ("per-method `N/A` unchanged"), **not a new departure**. Visibility: async-heavy targets will show
+  more `N/A` than the Java tool would.
+- **W-T10b — `get_`/`set_`/`add_`/`remove_` prefix-skip false-positive (rule 3).** A user method
+  literally named `get_Foo` (with an underscore) would be wrongly skipped → `N/A`. Negligible
+  probability; sanctioned by W-T9b. Logged.
+- **W-T10c — synthetic-`MoveNext` skip via containing class (ACCEPTED, ratified).** The skip predicate
+  does **not** blanket-skip `MoveNext` by name; a synthetic `MoveNext` is caught by its angle-bracket
+  state-machine class (rule 1), while a user-authored `IEnumerator.MoveNext` on a real class is kept and
+  attributed (T9 emits it). This is the more-faithful reading of W-T9b's "skip *synthesized* members,"
+  ratified as the accepted choice (not a departure); pinned both ways by
+  `SkipsSyntheticStateMachineClassButKeepsRealMoveNext` (test 9).
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
