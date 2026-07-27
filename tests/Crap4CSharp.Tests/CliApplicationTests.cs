@@ -319,7 +319,7 @@ public class CliApplicationTests
         });
     }
 
-    // 13 -- C#-specific trigger-3 boundary: a non-zero coverage exit throws InvalidOperationException, which
+    // 13 -- C#-specific trigger-3 boundary: a non-zero coverage exit throws CoverageException, which
     // Execute PROPAGATES (T15 converts it to exit 1).
     [Fact]
     public void PropagatesWhenCoverageCommandFails()
@@ -333,7 +333,7 @@ public class CliApplicationTests
 
             Action act = () => app.Execute(["Sample.cs"]);
 
-            act.Should().Throw<InvalidOperationException>()
+            act.Should().Throw<CoverageException>()
                 .WithMessage("Coverage command failed with exit 2");
         });
     }

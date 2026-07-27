@@ -236,9 +236,11 @@ with no Java counterpart (JaCoCo's report path was a fixed constant, so Java nee
 
 - **No new departure from D-T12a/c/d.** The generate/locate split (D-T12a) preserves Java's
   `CoverageRunner` shape and keeps the locator independently testable; resolve-once/run-once (D-T12c) is
-  departure #7; `InvalidOperationException` with the byte-identical message
-  `"Coverage command failed with exit N"` (D-T12d) is the already-ratified `IllegalStateException`
-  analog (C1, as in `CoberturaCoverageParser`). The T12/T14 fail-fast boundary is unchanged: T12
+  departure #7; the coverage-command failure throws with the byte-identical message
+  `"Coverage command failed with exit N"` (D-T12d) — originally the `IllegalStateException` →
+  `InvalidOperationException` analog (C1, as in `CoberturaCoverageParser`), but **retyped at T15
+  (ruling A) to the domain `CoverageException`** (message unchanged) so `Program.Main` can catch it
+  specifically (D-T15b). The T12/T14 fail-fast boundary is unchanged: T12
   **throws** on command failure (faithful) and **returns `null`** when the report is absent (the new
   locate signal); every exit-code decision (departure #1) stays in T14.
 
@@ -266,8 +268,9 @@ beyond the already-approved set #1–#8.**
   produced`** → exit 1. (2) `CoberturaCoverageParser.Parse(report).Count == 0` → anchor **`contained no
   coverage data`** → exit 1 — trigger 2 must inspect **`coverageMap.Count`, not the metrics** (a
   populated-but-non-matching report also yields all-`N/A` metrics yet must NOT fail-fast). (3)
-  `CoverageRunner.GenerateCoverage` throws → **propagates** (anchor **`Coverage command failed with
-  exit`**), realized as exit 1 at T15. Mr. Das ruled the trigger 1/2 wording to these defaults; tests
+  `CoverageRunner.GenerateCoverage` throws `CoverageException` → **propagates** (anchor **`Coverage
+  command failed with exit`**), realized as exit 1 at T15 via the specific `catch (CoverageException)`
+  in `Program.Main` (ruling A / D-T15b). Mr. Das ruled the trigger 1/2 wording to these defaults; tests
   assert only the bold anchor substring, so wording may re-tune without touching test structure.
 
 - **D-T14c — double-parse LOCKED (option A); the `Analyze(map)` overload is DEFERRED.** T14 calls
@@ -281,9 +284,14 @@ beyond the already-approved set #1–#8.**
 - **D-T14d — the T14/T15 propagation boundary (LOAD-BEARING for T15).** `Execute` does **not** catch
   the coverage-runner / parser throw (faithful to Java `execute … throws Exception`); it propagates.
   Java relied on the JVM exiting 1 on an uncaught exception, but **.NET does not guarantee exit 1 on an
-  unhandled exception**, so T15's `Program.Main` **must** catch and convert to exit 1. Mr. Das ruled the
-  mechanism = a **bare `catch`** (not a `CoverageException` wrapper; Java has none), **applied at T15**,
-  not T14. `Program.cs` stays the current stub until T15.
+  unhandled exception**, so T15's `Program.Main` **must** catch and convert to exit 1. This boundary was
+  planned at T14 as a **bare `catch`** (the "D2" mechanism; Java has no coverage wrapper), but
+  **superseded at T15 by ruling A** (see the T15 register / D-T15b): T15 instead throws the domain
+  `CoverageException` and catches it **specifically** (`catch (CoverageException) → return 1`), realizing
+  the **identical** observable behavior (full `ex` to stderr + exit 1) while keeping the entry-point
+  catch least-privilege / CA1031-clean with **no** suppression. The load-bearing invariant is unchanged:
+  `Execute` keeps propagating and `Program.Main` MUST catch to guarantee exit 1. (T15 shipped;
+  `Program.cs` is no longer a stub.)
 
 - **Below the departure bar (no departure number, no ruling needed).** `MaxCrap`/`ThresholdExceeded`/
   `Usage` are housed on `CliApplication` (T14), not on `Program` (T15) as Java put `maxCrap`/`usage` on
@@ -292,6 +300,67 @@ beyond the already-approved set #1–#8.**
   `CrapAnalyzer` (T11) and `ReportFormatter` (T4) already apply the identical stable "scored desc, N/A
   last" sort and `MaxCrap` is order-free (behavior-preserving). The single-line trigger-1 message
   (avoids SA1118) is byte-identical to the fail-fast contract.
+
+## T15 register — `Program` entry point + spawn integration tests (S4; Anders T15 review, 🟢)
+
+Resolved decisions and load-bearing invariants from the entry-point task. `Program.Main` faithfully
+ports crap4java's `Main.main` shape — resolve the project root, wire the real console streams + a real
+`ProcessCommandExecutor`, delegate to `CliApplication.Execute`, and convert an escaping coverage-command
+failure to exit 1 — while composition and exit ownership stay on `CliApplication` (D-T14b), so `Program`
+adds no logic of its own. **No new behavioral departure beyond the already-approved set #1–#8.**
+
+- **D-T15a — `Program` is a thin entry point only (no `Run` seam).** `Main` composes and delegates in a
+  single expression; there is **no** intermediate `Run`/composition-root method, and
+  `MaxCrap`/`Usage`/`ThresholdExceeded` stay on `CliApplication` (D-T14b), not on `Program` (where Java
+  put `maxCrap`/`usage` on `Main`). This avoids a composition→orchestration forward dependency and keeps
+  the S5/T17 resolution-model swap localized to `ModuleRootResolver` (D-T12b) — `Program` never learns
+  how the root is found.
+
+- **D-T15b — `CoverageException` + the specific `catch (CoverageException) → return 1` REALIZES and
+  DISCHARGES the D-T14d boundary (LOAD-BEARING on both ends).** `CoverageRunner.GenerateCoverage` throws
+  the domain `public sealed class CoverageException` (three standard ctors, **no** serialization ctor —
+  the modern net8.0 CA1032 form; the legacy ctor is obsolete under `SYSLIB0051`), message byte-identical
+  (`"Coverage command failed with exit N"`); `CliApplication.Execute` **keeps propagating** it (never
+  catches); `Program.Main` catches it **specifically** and returns 1, writing the full `ex` (type +
+  message + stack via `Console.Error.WriteLine(ex)`, ruling B) to stderr. This is what guarantees exit 1
+  on .NET (which does **not** guarantee it for an unhandled exception), so **both** ends are load-bearing:
+  `Execute` must not start catching, and `Program.Main` must not stop catching. The typed catch is
+  CA1031-clean with **no** `.editorconfig` entry / suppression, **superseding the T14-planned bare
+  `catch`** (D-T14d). Mr. Das's register wording, verbatim: "introduce `CoverageException` to enable a
+  least-privilege specific catch (CA1031-clean, no suppression); observable behavior unchanged (stderr +
+  exit 1), so not a behavioral departure — **supersedes D2**." (Here "D2" = the T14-planned bare-catch
+  mechanism recorded in D-T14d, **not** the feature-doc deferral "D2 = O2 subprocess timeout".)
+
+- **D-T15c — `projectRoot = Path.GetFullPath(".")` (LOAD-BEARING for downstream path combines).** Mirrors
+  Java `Path.of(".").toAbsolutePath().normalize()`: an absolute, normalized current directory. Every
+  downstream combine/resolve (`ModuleRootResolver.Resolve`, the coverage results dir, explicit-file
+  resolution) assumes an absolute normalized root, so this exact spelling is load-bearing — do not pass a
+  bare `"."`.
+
+- **D-T15d — spawn resolution: `dotnet <Microsoft.Crap4CSharp.dll>` via `AppContext.BaseDirectory`.** The
+  app assembly is `Microsoft.Crap4CSharp.dll` (`Common.targets`:
+  `AssemblyName=Microsoft.$(MSBuildProjectName)`), located next to the test assembly through
+  `AppContext.BaseDirectory` — present at run time because the app is a **ProjectReference** of the test
+  project, so its DLL is copied into the test output dir. The tests launch it **framework-dependent** as
+  `dotnet <dll>`, **not** the OS apphost (`Microsoft.Crap4CSharp.exe` on Windows,
+  extension-less/possibly non-executable after xcopy on Linux), so both spawn tests run uniformly on
+  every CI OS (incl. ubuntu).
+
+- **D-T15e — the two spawn tests must never reach a coverage run (fast/deterministic under D-T8).** Both
+  ported crap4java `MainTest.mainProcess*` cases pick arguments that short-circuit **before**
+  `CliApplication` reaches `CoverageRunner.GenerateCoverage`: `--help` → usage / exit 0; `--changed` + a
+  file arg → parse error (`ArgumentException`) → stderr / exit 1. No real `dotnet test` is ever spawned,
+  so the tests are fast and deterministic even though D-T8 runs them by default. The four remaining Java
+  `MainTest` cases (#1/#4/#5/#6) are covered in-process by `CliApplicationTests` (a D-T14b relocation, not
+  a reduction) — no fidelity loss.
+  - **Below-threshold consequence of the least-privilege catch (no departure number, no ruling needed).**
+    The specific `catch (CoverageException)` narrows the converted-to-exit-1 surface to the coverage-
+    **command** failure. A `CoberturaCoverageParser.Parse` `InvalidOperationException` (malformed XML,
+    D-T10a) would **not** be converted to a clean exit 1 — but `CoverageReportLocator.Locate` only ever
+    surfaces a **real coverlet** report (well-formed by construction), so this path is **untested and
+    practically unreachable**. It is a deliberate below-threshold consequence of the typed catch, **not**
+    a new behavioral departure (the reachable observable behavior — stderr + exit 1 on a coverage-command
+    failure — is unchanged from the bare-catch plan).
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 

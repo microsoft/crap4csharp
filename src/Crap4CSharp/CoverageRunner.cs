@@ -11,8 +11,10 @@ using System.Globalization;
 //     coverage`, and the two JaCoCo artifacts (target/site/jacoco + target/jacoco.exec) collapse to the
 //     single "coverage" results directory. `dotnet test` with no project/solution argument discovers the
 //     project in the working directory (projectRoot), exactly as `mvn` did.
-//   * IllegalStateException -> InvalidOperationException (the repo's ratified analog, C1). The exit-failure
-//     message is byte-identical to Java: "Coverage command failed with exit N".
+//   * IllegalStateException -> the domain CoverageException (introduced in T15 per Mr. Das ruling A): the
+//     coverage-command failure now throws CoverageException so the entry point can catch it SPECIFICALLY
+//     (CA1031-clean, no suppression) and convert it to exit 1. The exit-failure message is byte-identical to
+//     Java: "Coverage command failed with exit N".
 //
 // Resolve-once (departure #7): this type takes a PRE-RESOLVED projectRoot and never calls ModuleRootResolver;
 // it runs coverage exactly once at the one root (no module-group loop). The fail-fast gate is T14, not here:
@@ -36,7 +38,7 @@ public sealed class CoverageRunner
     }
 
     // Ports generateCoverage(Path): delete the stale results dir, run the coverage command once at projectRoot,
-    // throw InvalidOperationException on a non-zero exit. Returns void.
+    // throw CoverageException on a non-zero exit. Returns void.
     public void GenerateCoverage(string projectRoot)
     {
         ArgumentNullException.ThrowIfNull(projectRoot);
@@ -61,7 +63,7 @@ public sealed class CoverageRunner
         {
             // Byte-identical to Java; InvariantCulture keeps the exit number locale-independent (CA1305,
             // departure #3).
-            throw new InvalidOperationException(
+            throw new CoverageException(
                 "Coverage command failed with exit " + exit.ToString(CultureInfo.InvariantCulture));
         }
     }

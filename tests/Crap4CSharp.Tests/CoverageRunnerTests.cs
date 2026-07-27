@@ -48,7 +48,7 @@ public class CoverageRunnerTests
 
             Action act = () => runner.GenerateCoverage(root);
 
-            act.Should().Throw<InvalidOperationException>()
+            act.Should().Throw<CoverageException>()
                 .WithMessage("Coverage command failed with exit 2");
         });
     }
