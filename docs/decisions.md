@@ -63,6 +63,12 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
     members + public test methods), **not** private fields; do not avoid a private field for fear of a
     CA1707 conflict.
 
+- **D-T8 — No `[Trait]` categorization (RESOLVED — Mr. Das ruled NO TRAITS).** crap4csharp adds **no**
+  `[Trait]` attributes to its own tests; **all** crap4csharp tests are treated as unit tests, so the
+  tight agentic dev loop runs them **by default** (the T6/T8 process/git integration-style tests run
+  as-is). Full policy detail — "unit unless explicitly marked integration" + full-suite-needs-approval
+  — lives in `README.md`. Closes the open **D-T8** decision; no `.github/skills/build-test.md` edit.
+
 ## Frozen reciprocal contract — `TypeName` canonical form (T9 ⇄ T10 ⇄ T11)
 
 **FROZEN (T9 review, Anders).** The per-method coverage-lookup key `MethodDescriptor.TypeName` (the
@@ -186,6 +192,18 @@ counters (departure #4). **No new behavioral departure beyond the already-approv
    guaranteed either way. Marker precedence: nearest `.sln` → nearest `.csproj` → start dir. (Ruled by
    Mr. Das; T13 shipped as `e4d1329`, no rework.)
 
+7. **Resolve-once (single module root per run)** — `crap4csharp` resolves **one** module root per run
+   via the existing `ModuleRootResolver` and runs coverage **once** at that root, in place of crap4java
+   §6's per-module grouping (`groupByModuleRoot`/`analyzeByModule` — "group by module … run coverage
+   once per module group"). T11/T12/T14 therefore resolve once and run once — **no** module-group loop
+   in `CliApplication`/`CrapAnalyzer`, and multi-`.sln` (multi-module) targets collapse to the single
+   resolved root: a knowing fidelity reduction from crap4java §6. Rationale: multi-module analysis is
+   uncommon, the C# baseline already assumes a single resolvable `.sln` (R2/R6), and resolve-once keeps
+   the pipeline materially simpler. **Test-parity consequence:** crap4java's module-grouping tests
+   **adapt to resolve-once (assert a single resolve + single coverage run) or drop** — Bhaskar/Dave
+   apply this at T11/T12/T14; no group-loop tests are ported. (Ruled by Mr. Das; supersedes watch-item
+   **W17**.)
+
 ## Cyclomatic complexity — authoritative node set
 
 Base `CC = 1`. Walk the method `Body`/`ExpressionBody`; **descend into lambdas + local functions**;
@@ -215,6 +233,9 @@ Base `CC = 1`. Walk the method `Body`/`ExpressionBody`; **descend into lambdas +
 
 The single knowing parity break: ~4 `CliApplication`/`Program` coverage-path tests change from
 "warn + `N/A` + exit 0" to fail-fast; **+2** new fail-fast tests. All other assertions are identical.
+
+Separately, **departure #7 (resolve-once)** adapts crap4java's module-grouping tests to a single
+resolve + single coverage run (or drops them) — no module-group-loop tests are ported (T11/T12/T14).
 
 ## Environment adaptations (from nucleus)
 

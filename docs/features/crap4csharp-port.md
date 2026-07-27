@@ -35,7 +35,7 @@ the augmented complexity node set, and approved deliberate departures are in `do
 | S2 | Pure core (CRAP formula, report, CLI parse, domain types) with parity tests | S1 |
 | S3 | Ecosystem adapters (process exec, file finders, Roslyn parser, Cobertura parser) with parity tests | S1 |
 | S4 | Composition + CLI wiring + fail-fast + end-to-end | S2, S3 |
-| S5 | Module & test resolution finalization: resolve the file→module→test resolution model (Anders presents options a/b/c; Mr. Das rules), then implement the chosen model — rework T13 `ModuleRootResolver` and shape T12/T14 as needed | S4 |
+| S5 | Module & test resolution finalization — **resolution model only** (`.sln` vs nearest-`.csproj` vs hybrid) **plus test-project resolution**: Anders presents options a/b/c; Mr. Das rules; then implement the chosen model — rework T13 `ModuleRootResolver` and shape T12/T14 as needed. Module *grouping* is **out of S5** (closed by resolve-once departure #7). | S4 |
 | S6 | Independent clean-room evaluation: a neutral evaluator on gpt-5.6-sol judges the delivered port against the VERBATIM original Requirements block (report-only) | S5 |
 | S7 | Real-world dogfooding: run the finished crap4csharp on three real C# repos — crap4csharp, mutate4csharp, dry4csharp — producing actual CRAP reports | S6 |
 
@@ -61,7 +61,7 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T14 | S4 | `CliApplication` + tests; **fail-fast gate** (no-coverage/empty-report → exit 1) | Pending | - |
 | T15 | S4 | `Program` entry (+ `CoverageException`) + integration tests (spawn built exe) | Pending | - |
 | T16 | S4 | README usage section + end-to-end smoke (positive + negative fail-fast) | Pending | - |
-| T17 | S5 | Module & test resolution finalization: Anders presents options — (a) keep the locked `.sln`-first model / (b) adopt mutate4csharp's nearest-`.csproj` owning project + `<Project>.Tests`/`<Project>.UnitTests` test-project resolution / (c) hybrid — per `../mutate4csharp` README §"Module & Test Resolution"; Mr. Das rules; then implement the chosen model — rework `ModuleRootResolver` (T13) and shape T12/T14. Keep running ALL module tests (crap4java parity); do NOT adopt unit-only `[Trait]` filtering. | Pending (deferred) | - |
+| T17 | S5 | Module & test resolution finalization — **resolution model + test-project resolution only**: Anders presents options — (a) keep the locked `.sln`-first model / (b) adopt mutate4csharp's nearest-`.csproj` owning project + `<Project>.Tests`/`<Project>.UnitTests` test-project resolution / (c) hybrid — per `../mutate4csharp` README §"Module & Test Resolution"; Mr. Das rules; then implement the chosen model — rework `ModuleRootResolver` (T13) and shape T12/T14. Module *grouping* is **no longer in scope** (removed by the resolve-once departure #7). Keep running ALL module tests (crap4java parity); do NOT adopt unit-only `[Trait]` filtering. | Pending (deferred) | - |
 | T18 | S6 | Independent evaluation on gpt-5.6-sol. Neutral sub-agent (NOT Anders/Dave/Bhaskar). Inputs = verbatim `## Requirements` block + read the delivered port + crap4java ONLY; must NOT read `docs/decisions.md`, rest of `docs/features`, `.github` playbook/agents, or any rationale. Report-only verdict to Mr. Das. | Pending (deferred) | - |
 | T19 | S7 | Dogfood crap4csharp on crap4csharp + `../mutate4csharp` + `../dry4csharp`; capture CRAP reports; summarize crappy methods to Mr. Das. | Pending (deferred) | - |
 
@@ -219,15 +219,16 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
 
 ### Carry-forward watch-items (from Anders's T13 review — must be honored at the noted task)
 
-- **W17 — T14 resolves the module root ONCE; multi-module grouping is a product call.** T14 must
-  resolve the module root by calling `ModuleRootResolver.Resolve` **once** at the discovered `.sln`, and
-  must **not** port Java's per-file `groupByModuleRoot`/`analyzeByModule` for the single-solution
-  baseline (R2/R6 already assume a single resolvable `.sln`). This **drops** crap4java's multi-module
-  (multi-`.sln`) grouping — a fidelity reduction. **Escalate to Mr. Das at T14 as a departure
-  candidate** (log as approved departure if he takes resolve-once; otherwise preserve grouping by
-  calling `Resolve` per file and grouping by root). Cross-ref R2, R6, T11 (`CrapAnalyzer` per-method
-  `TypeName`/coverage lookup) and T12 (`CoverageRunner` `dotnet test` at the module root). Do **not**
-  silently drop grouping.
+- **W17 — T14 resolves the module root ONCE; multi-module grouping is a product call.** *(RESOLVED —
+  Mr. Das ruled RESOLVE-ONCE; recorded as departure #7 in `docs/decisions.md`.)* T14 (with T11/T12)
+  resolves the module root by calling `ModuleRootResolver.Resolve` **once** at the discovered `.sln`
+  and runs coverage **once**; it does **not** port Java's per-file
+  `groupByModuleRoot`/`analyzeByModule` — there is **no module-group loop** in
+  `CliApplication`/`CrapAnalyzer`. This **drops** crap4java §6's multi-module (multi-`.sln`) grouping —
+  a knowing fidelity reduction (R2/R6 already assume a single resolvable `.sln`). **Test-parity:**
+  crap4java's module-grouping tests **adapt to resolve-once (single resolve + single coverage run) or
+  drop** at T11/T12/T14. Cross-ref departure #7, R2, R6, T11 (`CrapAnalyzer` per-method
+  `TypeName`/coverage lookup) and T12 (`CoverageRunner` `dotnet test` at the module root).
 - **W18 — Nonexistent-start-path normalization (below threshold today).** `Resolve` uses
   `File.Exists(full) ? parent : full`, which diverges from Java's `isDirectory ? self : parent`
   **only** for a nonexistent leaf (C# returns the leaf; Java returns its parent). Harmless in the
@@ -296,8 +297,15 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   signature + test set followed the ruling; 17 tests = 7 faithful ports + 10 new, 56/56 green).
   Design-lane FYIs (Anders, vetoable): collection scope =
   methods only; expression-bodied methods included; nested-type class-name format is a T10 pin.
-- **D-T8 — Integration-test categorization / fast-loop scope (agentic-loop policy).** *(OPEN —
-  escalated to Mr. Das; JARVIS to route at the S3 boundary.)* `.github/skills/build-test.md` promises
+- **D-T8 — Integration-test categorization / fast-loop scope (agentic-loop policy).** *(RESOLVED —
+  Mr. Das ruled NO TRAITS.)* **Verdict:** crap4csharp adds **no** `[Trait]` attributes to its own
+  tests; **all** crap4csharp tests are treated as unit tests and are run by the tight agentic dev loop
+  **by default** — including the T6/T8 process/git integration-style tests
+  (`ProcessCommandExecutorTests`, `ChangedFileDetectorTests`), which run **as-is**. **No** `[Trait]` is
+  added and **no** `.github/skills/build-test.md` edit is needed; the policy is documented in
+  `README.md` and recorded in `docs/decisions.md` (Ratified conventions). The historical context below
+  (the doc/code gap and the two candidate resolutions) is retained for the record but is **superseded
+  by this NO-TRAITS ruling**. `.github/skills/build-test.md` promises
   the fast loop excludes integration tests via `--filter "Category!=Integration"`, but **no** test
   carries that trait (0 grep matches), so the fast loop currently spawns real `git`/processes
   (`ChangedFileDetectorTests`, `ProcessCommandExecutorTests`) — doc and code disagree. Two coherent
@@ -314,8 +322,9 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   class-level `[Trait("Category", "Integration")]` to both test classes (no new `using` — `Xunit` is a
   global using), and the convention is recorded in `docs/decisions.md` (Ratified conventions); no
   `build-test.md` edit. **If (a):** replace `build-test.md`'s final paragraph with the no-tagging
-  reality (forward-looking: tag integration tests as they land). Either way the doc/reality gap must
-  close at the ratification point.
+  reality (forward-looking: tag integration tests as they land). **Resolution (Mr. Das):** **NO
+  TRAITS** — closest to **(a)** (no tags added), but `build-test.md` is left untouched and the
+  doc/reality reconciliation lives in `README.md`; **D-T8 is CLOSED**.
 
 - **D-T13 — Module-root walk unbounded (B1) — ratification.** *(RESOLVED — Mr. Das approved.)*
   `ModuleRootResolver` climbs **unbounded** to the filesystem root and falls back to the **start
@@ -338,24 +347,31 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
 ### S5/S6/S7 finale — design constraints (design-lane)
 
 - **D-S5 (design — deferred to when S5 runs; options-only now):** S5 finalizes the
-  file→module→test resolution model before the port is "done-done" and before the real-world slices
-  (S6 eval / S7 dogfood). The port keeps driving on the **locked `.sln`-first model** (decisions.md
+  file→module→test **resolution model** (`.sln` vs nearest-`.csproj` vs hybrid) **plus test-project
+  resolution** before the port is "done-done" and before the real-world slices
+  (S6 eval / S7 dogfood). **Scope trim (post-W17):** module *grouping* is **no longer part of S5** —
+  the resolve-once ruling (departure #7 in `docs/decisions.md`; W17 RESOLVED) removes crap4java §6
+  multi-module grouping entirely, so S5 decides only how a target file resolves to its **single**
+  module root and its test project. The port keeps driving on the **locked `.sln`-first model** (decisions.md
   "Module root" locked choice + departure #6; T13 shipped `e4d1329`) through S3→S4; **S5 is the only
   place the model is revisited/decided/reworked — do NOT change T13 or the resolution model before
   S5.** Reference for writing the options faithfully: `../mutate4csharp` README §"Module & Test
   Resolution" (READ-ONLY sibling — do not write there).
   - **Options Anders presents / Mr. Das rules on WHEN THE SLICE RUNS (not now):** **(a)** keep the
-    locked `.sln`-first model — crap4java §6 parity, T13 as shipped; **(b)** adopt mutate4csharp's
+    locked `.sln`-first **resolution** model — T13 as shipped (crap4java §6 multi-module *grouping* is
+    out of scope per departure #7); **(b)** adopt mutate4csharp's
     model — owning project = nearest `.csproj` above the target `.cs` (file name w/o extension =
     `<Project>`); test project = `<Project>.Tests.csproj` **or** `<Project>.UnitTests.csproj` whose
     project references (transitively) include `<Project>.csproj`, and only that project's tests run
-    (fail fast if no owning `.csproj`/test project is found); **(c)** hybrid — `.sln` grouping but
-    borrow the `.Tests`/`.UnitTests` convention to select and run the right test project. Then
-    implement the chosen model: rework `ModuleRootResolver` (T13); shape T12/T14.
+    (fail fast if no owning `.csproj`/test project is found); **(c)** hybrid — `.sln`-based module
+    resolution but borrow the `.Tests`/`.UnitTests` convention to select and run the right test project
+    (multi-module *grouping* remains out of scope per departure #7). Then implement the chosen model:
+    rework `ModuleRootResolver` (T13); shape T12/T14.
   - **Locked constraint on this slice (Mr. Das already ruled):** do **NOT** adopt mutate4csharp's
     unit-only `[Trait("type", …)]` filtering (which keeps `UnitTests`/`Unit`/untagged and excludes
     `IntegrationTests`) — crap4csharp keeps running **ALL** module tests (crap4java parity). This is
-    **distinct** from the separate **open D-T8** agentic-loop fast-loop tagging question, which
+    **distinct** from the separate **D-T8** agentic-loop fast-loop tagging question (now RESOLVED —
+    NO TRAITS), which
     governs **our own** dev-loop test suite (`[Trait("Category", "Integration")]` on process/CLI
     tests), **not** how the tool runs a *target's* tests.
   - **Engineering watch-item (honor during S4):** keep **T12 (`CoverageRunner`)** and **T14

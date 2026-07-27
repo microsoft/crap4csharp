@@ -37,6 +37,17 @@ For each invocation, per module (nearest `.sln`, else `.csproj`, else the projec
 dotnet test
 ```
 
+## Test policy (agentic dev loop)
+
+Tight agentic development loops run the **unit tests by default** for fast feedback.
+
+- **Unit-test convention:** a test is treated as a **unit test unless it is explicitly marked an
+  integration test** (e.g. `[Trait("Category", "Integration")]`).
+- crap4csharp marks **none** of its tests, so **all** of them are treated as unit tests and run by
+  default — including the process- and `git`-touching tests.
+- Running the **full** suite (including any long-running tests) requires **explicit user approval**,
+  because slow tests delay the tight loop.
+
 ## Run
 
 Build:
