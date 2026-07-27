@@ -199,6 +199,49 @@ exactly as the Java original does. **No new behavioral departure beyond the alre
   attributed to synthetic state machines skipped by T9/T10). Consistent with departure #1; not a new
   departure. Expect more `N/A` rows on async-heavy targets.**
 
+## T12 register — `CoverageRunner` + `CoverageReportLocator` (S4; Anders T12 review, 🟢)
+
+Resolved decisions and load-bearing invariants from the coverage generate/locate task. `CoverageRunner`
+is a faithful 1:1 port of `crap4java`'s `CoverageRunner` (delete-stale → run-once → throw-on-nonzero),
+re-hosted on the `dotnet test --collect` pipeline; `CoverageReportLocator` is a C#-specific addition
+with no Java counterpart (JaCoCo's report path was a fixed constant, so Java needed no locator).
+**No new behavioral departure beyond the already-approved set #1–#8.**
+
+- **D-T12b — the pre-resolved-`projectRoot` decoupling seam is LOAD-BEARING (do not break at S5/T17).**
+  Both types take a **pre-resolved** `projectRoot` string and **never** call `ModuleRootResolver`; T14
+  resolves the one module root once (departure #7) and injects the same string into
+  `GenerateCoverage(root)` and `Locate(root)`. This is the seam the S5/T17 resolution-model swap
+  (`.sln` vs `.csproj` vs hybrid) turns on: that swap must change **only** `ModuleRootResolver` —
+  `CoverageRunner`/`CoverageReportLocator` stay untouched because they never learn *how* the root was
+  found. Do not reintroduce a resolver call into either type.
+
+- **D-T12e — `ResultsDirectoryName` is a frozen reciprocal contract (single source of truth).** The
+  results-directory name `"coverage"` is declared **once** as `public const
+  CoverageRunner.ResultsDirectoryName` and referenced by **both** the writer (`CoverageRunner`, which
+  passes it to `--results-directory`) and the reader (`CoverageReportLocator`, which `Path.Combine`s it
+  under `projectRoot`). Same lesson as the frozen `TypeName` contract: writer and reader must agree
+  byte-for-byte or the locator silently finds nothing (a false fail-fast). Do not inline the literal
+  `"coverage"` on either side and do not split it into two constants.
+
+- **D-T12f — ordinal-first single-pick is a LOAD-BEARING determinism invariant.** When more than one
+  `coverage.cobertura.xml` exists, `Locate` returns the **ordinal-first** full path
+  (`OrderBy(f => f, StringComparer.Ordinal).FirstOrDefault()`) — OS-independent and timing-free (no
+  mtime/`LastWriteTime`; `CoverageRunner` deletes `coverage/` before every run, so every found file is
+  fresh). Do not switch to timestamp/most-recent selection (reintroduces timing sensitivity) or a
+  non-ordinal sort. The **multi-test-project fidelity reduction** this single-pick exposes (sibling
+  test-projects' coverage silently dropped → per-method `N/A`) and the **single-token `--collect`
+  spelling** were both ruled by Mr. Das to the contract's locked defaults — recorded as **departure
+  #8**; multi-report aggregation is deferred to S5/T17 and revisited if S7 dogfooding hits a
+  multi-test-project target.
+
+- **No new departure from D-T12a/c/d.** The generate/locate split (D-T12a) preserves Java's
+  `CoverageRunner` shape and keeps the locator independently testable; resolve-once/run-once (D-T12c) is
+  departure #7; `InvalidOperationException` with the byte-identical message
+  `"Coverage command failed with exit N"` (D-T12d) is the already-ratified `IllegalStateException`
+  analog (C1, as in `CoberturaCoverageParser`). The T12/T14 fail-fast boundary is unchanged: T12
+  **throws** on command failure (faithful) and **returns `null`** when the report is absent (the new
+  locate signal); every exit-code decision (departure #1) stays in T14.
+
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
 1. **Fail fast** — when a module produces no coverage / runs no tests, exit non-zero (`1`) with a
@@ -254,6 +297,25 @@ exactly as the Java original does. **No new behavioral departure beyond the alre
    **adapt to resolve-once (assert a single resolve + single coverage run) or drop** — Bhaskar/Dave
    apply this at T11/T12/T14; no group-loop tests are ported. (Ruled by Mr. Das; supersedes watch-item
    **W17**.)
+
+8. **Single-pick coverage report (ordinal-first)** — `CoverageReportLocator` (T12) deterministically
+   selects **one** `coverage.cobertura.xml` via an **ordinal-first single pick** over the discovered
+   report paths, and hands that single file to `CoberturaCoverageParser.Parse` (T10). Root-cause
+   mismatch: coverlet emits **one report per test project** (`dotnet test --collect` drops a
+   `coverage.cobertura.xml` per test project under `TestResults/`), whereas JaCoCo emits a **single
+   per-module aggregate** — there is no coverlet analog of that aggregate, so the port picks one report
+   rather than reading a ready-made union. **Consequence (under-reporting):** on a multi-test-project
+   solution, methods whose coverage lives in the **non-picked** reports have no matching entry in the
+   chosen report and resolve to per-method `N/A` (T11) — consistent with departure #1's "per-method
+   `N/A` unchanged" — which makes a genuinely-covered method score as if **0-covered** and thereby
+   **inflates its CRAP**; every test project except the picked one is under-reported. This is the
+   coverage-side counterpart of **departure #7** (resolve-once): one root → one coverage run → now **one
+   report**, and it is faithful to the common single-test-project baseline the port already requires
+   (R2/R6 — one test project referencing `coverlet.collector`, one resolvable `.sln`). The single
+   deterministic pick — **no** configuration flags and **no** report-merging branch — is deliberately
+   the same shape as T10's single-path `Parse`. **Mr. Das-approved; multi-report coverage AGGREGATION
+   (unioning the per-test-project reports) is DEFERRED to S5/T17**, whose scope now also owns report
+   aggregation so multi-test-project solutions stop under-reporting. (Ruled by Mr. Das.)
 
 ## Cyclomatic complexity — authoritative node set
 

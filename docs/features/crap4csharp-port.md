@@ -1,6 +1,6 @@
 # Feature: crap4csharp — faithful C# port of crap4java
 **Branch:** vibe/crap4csharp-port
-**Status:** In progress — **S4 underway** (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 `e4d1329`, B1 ratify `d0784b3`, T9 `400d49d`, T10 `87488ce`, T11 next commit); **85 tests green, 0/0 Release**. Analysis-composition layer (`CrapAnalyzer`) landed on the critical path; next = T12 `CoverageRunner` → T14 fail-fast gate → T15 `Program`/e2e → T16 README. **Pause at the S4 boundary** for Mr. Das.
+**Status:** In progress — **S4 underway** (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 `e4d1329`, B1 ratify `d0784b3`, T9 `400d49d`, T10 `87488ce`, T11 `debf9de`, T12 next commit); **95 tests green, 0/0 Release**. Coverage pipeline (`CrapAnalyzer` + `CoverageRunner`/`CoverageReportLocator`) landed; next = T14 fail-fast gate → T15 `Program`/e2e → T16 README finalize. **Pause at the S4 boundary** for Mr. Das.
 
 ## Requirements
 
@@ -35,7 +35,7 @@ the augmented complexity node set, and approved deliberate departures are in `do
 | S2 | Pure core (CRAP formula, report, CLI parse, domain types) with parity tests | S1 |
 | S3 | Ecosystem adapters (process exec, file finders, Roslyn parser, Cobertura parser) with parity tests | S1 |
 | S4 | Composition + CLI wiring + fail-fast + end-to-end | S2, S3 |
-| S5 | Module & test resolution finalization — **resolution model only** (`.sln` vs nearest-`.csproj` vs hybrid) **plus test-project resolution**: Anders presents options a/b/c; Mr. Das rules; then implement the chosen model — rework T13 `ModuleRootResolver` and shape T12/T14 as needed. Module *grouping* is **out of S5** (closed by resolve-once departure #7). | S4 |
+| S5 | Module & test resolution finalization — **resolution model** (`.sln` vs nearest-`.csproj` vs hybrid) **plus test-project resolution plus multi-report coverage aggregation**: Anders presents options a/b/c; Mr. Das rules; then implement the chosen model — rework T13 `ModuleRootResolver` and shape T12/T14 as needed. Module *grouping* stays **out of S5** (closed by resolve-once departure #7), but multi-report coverage **aggregation** is now **in S5** (per single-pick departure #8) — union the per-test-project `coverage.cobertura.xml` reports so multi-test-project solutions stop under-reporting. | S4 |
 | S6 | Independent clean-room evaluation: a neutral evaluator on gpt-5.6-sol judges the delivered port against the VERBATIM original Requirements block (report-only) | S5 |
 | S7 | Real-world dogfooding: run the finished crap4csharp on three real C# repos — crap4csharp, mutate4csharp, dry4csharp — producing actual CRAP reports | S6 |
 
@@ -55,13 +55,13 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T8  | S3 | `ChangedFileDetector` (git porcelain) + integration tests | Done | `c023ef8` |
 | T9  | S3 | `CSharpMethodParser` + `ComplexityWalker` (augmented node set) + CC oracle tests | Done | `400d49d` |
 | T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Done | `87488ce` |
-| T11 | S4 | `CrapAnalyzer` (exact→nearest-line lookup, per-method `TypeName`) + tests | Done | `(next commit)` |
-| T12 | S4 | `CoverageRunner` (`dotnet test --collect`) + `CoverageReportLocator` + tests | Pending | - |
+| T11 | S4 | `CrapAnalyzer` (exact→nearest-line lookup, per-method `TypeName`) + tests | Done | `debf9de` |
+| T12 | S4 | `CoverageRunner` (`dotnet test --collect`) + `CoverageReportLocator` + tests | Done | `(next commit)` |
 | T13 | S4 | `ModuleRootResolver` (nearest `.sln` → `.csproj` → root) + tests | Done | `e4d1329` |
 | T14 | S4 | `CliApplication` + tests; **fail-fast gate** (no-coverage/empty-report → exit 1) | Pending | - |
 | T15 | S4 | `Program` entry (+ `CoverageException`) + integration tests (spawn built exe) | Pending | - |
 | T16 | S4 | README usage section + end-to-end smoke (positive + negative fail-fast) | Pending | - |
-| T17 | S5 | Module & test resolution finalization — **resolution model + test-project resolution only**: Anders presents options — (a) keep the locked `.sln`-first model / (b) adopt mutate4csharp's nearest-`.csproj` owning project + `<Project>.Tests`/`<Project>.UnitTests` test-project resolution / (c) hybrid — per `../mutate4csharp` README §"Module & Test Resolution"; Mr. Das rules; then implement the chosen model — rework `ModuleRootResolver` (T13) and shape T12/T14. Module *grouping* is **no longer in scope** (removed by the resolve-once departure #7). Keep running ALL module tests (crap4java parity); do NOT adopt unit-only `[Trait]` filtering. | Pending (deferred) | - |
+| T17 | S5 | Module & test resolution finalization — **resolution model + test-project resolution + multi-report coverage aggregation**: Anders presents options — (a) keep the locked `.sln`-first model / (b) adopt mutate4csharp's nearest-`.csproj` owning project + `<Project>.Tests`/`<Project>.UnitTests` test-project resolution / (c) hybrid — per `../mutate4csharp` README §"Module & Test Resolution"; Mr. Das rules; then implement the chosen model — rework `ModuleRootResolver` (T13) and shape T12/T14. Module *grouping* is **no longer in scope** (removed by the resolve-once departure #7), but multi-report coverage **aggregation** IS now in scope (per single-pick departure #8) — replace T12's ordinal-first single-pick `CoverageReportLocator` with a union across the per-test-project `coverage.cobertura.xml` reports so multi-test-project solutions stop under-reporting. Keep running ALL module tests (crap4java parity); do NOT adopt unit-only `[Trait]` filtering. | Pending (deferred) | - |
 | T18 | S6 | Independent evaluation on gpt-5.6-sol. Neutral sub-agent (NOT Anders/Dave/Bhaskar). Inputs = verbatim `## Requirements` block + read the delivered port + crap4java ONLY; must NOT read `docs/decisions.md`, rest of `docs/features`, `.github` playbook/agents, or any rationale. Report-only verdict to Mr. Das. | Pending (deferred) | - |
 | T19 | S7 | Dogfood crap4csharp on crap4csharp + `../mutate4csharp` + `../dry4csharp`; capture CRAP reports; summarize crappy methods to Mr. Das. | Pending (deferred) | - |
 
@@ -348,11 +348,17 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
 
 - **D-S5 (design — deferred to when S5 runs; options-only now):** S5 finalizes the
   file→module→test **resolution model** (`.sln` vs nearest-`.csproj` vs hybrid) **plus test-project
-  resolution** before the port is "done-done" and before the real-world slices
+  resolution plus multi-report coverage aggregation** before the port is "done-done" and before the
+  real-world slices
   (S6 eval / S7 dogfood). **Scope trim (post-W17):** module *grouping* is **no longer part of S5** —
   the resolve-once ruling (departure #7 in `docs/decisions.md`; W17 RESOLVED) removes crap4java §6
   multi-module grouping entirely, so S5 decides only how a target file resolves to its **single**
-  module root and its test project. The port keeps driving on the **locked `.sln`-first model** (decisions.md
+  module root and its test project. **Scope add (post-T12):** multi-report coverage **aggregation** is
+  now **in S5** — the single-pick ruling (departure #8 in `docs/decisions.md`) accepts T12's
+  ordinal-first single-pick `CoverageReportLocator` as the interim behavior, so S5/T17 also owns
+  replacing it with a union across the per-test-project `coverage.cobertura.xml` reports so
+  multi-test-project solutions stop under-reporting (grouping stays out per #7; aggregation comes in
+  per #8). The port keeps driving on the **locked `.sln`-first model** (decisions.md
   "Module root" locked choice + departure #6; T13 shipped `e4d1329`) through S3→S4; **S5 is the only
   place the model is revisited/decided/reworked — do NOT change T13 or the resolution model before
   S5.** Reference for writing the options faithfully: `../mutate4csharp` README §"Module & Test
