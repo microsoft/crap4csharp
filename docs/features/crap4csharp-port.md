@@ -1,6 +1,6 @@
 # Feature: crap4csharp — faithful C# port of crap4java
 **Branch:** vibe/crap4csharp-port
-**Status:** In progress — **S3 COMPLETE** (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 `e4d1329`, B1 ratify `d0784b3`, T9 `400d49d`, T10 next commit); **68 tests green, 0/0 Release**. All parsers + adapters landed. **Paused at the S3 boundary** for Mr. Das; next slice = S4 (T11 `CrapAnalyzer` → T12 → T14 → T15 → T16).
+**Status:** In progress — **S4 underway** (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 `e4d1329`, B1 ratify `d0784b3`, T9 `400d49d`, T10 `87488ce`, T11 next commit); **85 tests green, 0/0 Release**. Analysis-composition layer (`CrapAnalyzer`) landed on the critical path; next = T12 `CoverageRunner` → T14 fail-fast gate → T15 `Program`/e2e → T16 README. **Pause at the S4 boundary** for Mr. Das.
 
 ## Requirements
 
@@ -54,8 +54,8 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T7  | S3 | `SourceFileFinder` (`src/**/*.cs`, exclude `bin`/`obj`, ordinal sort) + tests | Done | `1b90d24` |
 | T8  | S3 | `ChangedFileDetector` (git porcelain) + integration tests | Done | `c023ef8` |
 | T9  | S3 | `CSharpMethodParser` + `ComplexityWalker` (augmented node set) + CC oracle tests | Done | `400d49d` |
-| T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Done | `(next commit)` |
-| T11 | S4 | `CrapAnalyzer` (exact→nearest-line lookup, per-method `TypeName`) + tests | Pending | - |
+| T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Done | `87488ce` |
+| T11 | S4 | `CrapAnalyzer` (exact→nearest-line lookup, per-method `TypeName`) + tests | Done | `(next commit)` |
 | T12 | S4 | `CoverageRunner` (`dotnet test --collect`) + `CoverageReportLocator` + tests | Pending | - |
 | T13 | S4 | `ModuleRootResolver` (nearest `.sln` → `.csproj` → root) + tests | Done | `e4d1329` |
 | T14 | S4 | `CliApplication` + tests; **fail-fast gate** (no-coverage/empty-report → exit 1) | Pending | - |

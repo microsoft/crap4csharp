@@ -90,7 +90,9 @@ on either side silently breaks coverage attribution (affected methods fall throu
   **keep** the backtick arity, bare-ify the global namespace — and must be **pinned against a real
   coverlet sample** (R3). See watch-item **W-T9a**.
 - **Consumer — `CrapAnalyzer` (T11):** builds coverage-map / method-lookup keys from this form. Do not
-  change one producer without the other.
+  change one producer without the other. **T11 discharged (Anders T11 review, 🟢)** — the consumer
+  matches these keys byte-for-byte; pinned end-to-end by
+  `ResolvesCoverageThroughFrozenReciprocalKeyEndToEnd`. See the **T11 register** below.
 - **T10 discharged (Anders T10 review, 🟢).** Producer 2 now emits this form byte-for-byte:
   `NormalizeTypeName` = `rawClassName.Replace('/', '.').Replace('+', '.')` (backtick arity **kept**),
   pinned by `NormalizeTypeNameProducesFrozenReciprocalForm` (test 11, D-table) and by the real
@@ -147,6 +149,55 @@ counters (departure #4). **No new behavioral departure beyond the already-approv
   attributed (T9 emits it). This is the more-faithful reading of W-T9b's "skip *synthesized* members,"
   ratified as the accepted choice (not a departure); pinned both ways by
   `SkipsSyntheticStateMachineClassButKeepsRealMoveNext` (test 9).
+
+## T11 register — `CrapAnalyzer` (S4 close-out; Anders T11 review, 🟢)
+
+Resolved decisions and watch-items from the final analysis-composition task. `CrapAnalyzer` is a
+faithful 1:1 port of `crap4java`'s `CrapAnalyzer` (`analyze`/`lookupCoverage`/`exactCoverage`/
+`nearestCoverage`/`parseTrailingLine`) — the flat composition layer (Slice S4) that reads the changed
+files itself and drives both parsers (T9 `CSharpMethodParser`, T10 `CoberturaCoverageParser`) itself,
+exactly as the Java original does. **No new behavioral departure beyond the already-approved set #1–#7.**
+
+- **Frozen reciprocal contract — CONSUMER end discharged (T11).** `CrapAnalyzer` builds its exact/
+  nearest lookup keys as `typeName + "#" + methodName + ":" + line` from `MethodDescriptor.TypeName`
+  (T9) and matches them byte-for-byte against T10's emitted map keys — the trailing `":"` is
+  load-bearing (stops `alpha` matching `alphaBeta`). Any drift on either producer silently collapses a
+  method's coverage to `N/A`. Line formatting uses `InvariantCulture` (departure #3) so keys round-trip.
+  Pinned end-to-end by `ResolvesCoverageThroughFrozenReciprocalKeyEndToEnd` (a nested generic
+  ``Demo.Outer`1.Inner`2`` resolving to a real 100%, not `N/A`). The T9⇄T10⇄T11 triad is now closed on
+  all three ends.
+
+- **D-T11a — `classNameFromSource` and the dead `projectRoot` param DROPPED (RESOLVED).** Java derived
+  one `className` per file (`package` regex + filename); C# instead carries the per-method
+  `MethodDescriptor.TypeName` (enclosing-type FQN, D-T9 / "coverage key = enclosing-type FQN"), so
+  `classNameFromSource` has no C# analog and is dropped — its "no namespace ⇒ bare name" behaviour is
+  already pinned by `CSharpMethodParserTests`' global-namespace form. Java's unused `projectRoot` param
+  is dropped with it (behaviour-preserving). Java's `usesSimpleClassNameWhenSourceHasNoPackage` test has
+  no C# counterpart (behaviour migrated to T9). **Not a new departure.**
+
+- **D-T11b — nearest-line is the COMMON path in C# (visibility, not a change).** JaCoCo's
+  `<method line>` equals the declaration line so Java's exact-match usually hits; T10 keys on
+  `minChildLine` (first executable line, ≠ `StartLine`), so C# exact-match usually MISSES and the
+  `exact→nearest→N/A` fallback resolves. The algorithm is faithful; only the branch hit-rate shifts.
+
+**Watch-items (T11 review — visibility for Mr. Das; none blocks T11):**
+
+- **W-T11a — tie-break relies on document-order enumeration (LOAD-BEARING invariant, not a departure).**
+  `nearestCoverage`'s strict `<` makes the first entry in map-enumeration order win a distance tie. The
+  production map is a `Dictionary<string, CoverageData>(StringComparer.Ordinal)` built by T10 in
+  document order and **never mutated after build**, so .NET's insertion-order enumeration makes the
+  tie-break **deterministic (document-order-first)** — the direct analog of Java's `LinkedHashMap`-pinned
+  test, and strictly more deterministic than Java production's `HashMap`. Do **not** switch the map type,
+  re-sort it, or remove keys, or this determinism breaks silently. Pinned by
+  `NearestCoverageKeepsFirstEntryWhenDistancesTie`.
+- **W-T11b — `ParseTrailingLine` (`int.TryParse` + `NumberStyles.Integer`) tolerates surrounding
+  whitespace where Java `Integer.parseInt` would not — UNREACHABLE (T10 keys are pure ASCII digits).
+  Negligible.**
+- **W-T11c — a directory path in `changedFiles` is skipped by `File.Exists` (Java would
+  `readString`-throw) — UNREACHABLE (dirs are expanded upstream, W12). Benign.**
+- **W-T10a inheritance — async/iterator methods resolve to per-method `N/A` here (their coverage is
+  attributed to synthetic state machines skipped by T9/T10). Consistent with departure #1; not a new
+  departure. Expect more `N/A` rows on async-heavy targets.**
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
