@@ -1,6 +1,6 @@
 # Feature: crap4csharp — faithful C# port of crap4java
 **Branch:** vibe/crap4csharp-port
-**Status:** In progress — **S2 complete** (T2 `545c000`, T3 `47c1a1c`, T4 `f830f0e`, T5 `1b7833b`); pure core landed, 16 tests green, 0/0 Release. Paused at S2 boundary for Mr. Das's steer before S3.
+**Status:** In progress — **S3 adapters + module-root landed** (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 next commit); 39 tests green, 0/0 Release. **T9/T10 blocked on Mr. Das** (D-T9, D-T10a); paused at the S3 boundary for rulings.
 
 ## Requirements
 
@@ -56,7 +56,7 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Pending | - |
 | T11 | S4 | `CrapAnalyzer` (exact→nearest-line lookup, per-method `TypeName`) + tests | Pending | - |
 | T12 | S4 | `CoverageRunner` (`dotnet test --collect`) + `CoverageReportLocator` + tests | Pending | - |
-| T13 | S4 | `ModuleRootResolver` (nearest `.sln` → `.csproj` → root) + tests | Pending | - |
+| T13 | S4 | `ModuleRootResolver` (nearest `.sln` → `.csproj` → root) + tests | Done | `(next commit)` |
 | T14 | S4 | `CliApplication` + tests; **fail-fast gate** (no-coverage/empty-report → exit 1) | Pending | - |
 | T15 | S4 | `Program` entry (+ `CoverageException`) + integration tests (spawn built exe) | Pending | - |
 | T16 | S4 | README usage section + end-to-end smoke (positive + negative fail-fast) | Pending | - |
@@ -215,6 +215,26 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   `src/` leak into the analysis set. Reinforces W8 (files for `ChangedSrc` come from the detector, not
   `FileArgs`).
 
+### Carry-forward watch-items (from Anders's T13 review — must be honored at the noted task)
+
+- **W17 — T14 resolves the module root ONCE; multi-module grouping is a product call.** T14 must
+  resolve the module root by calling `ModuleRootResolver.Resolve` **once** at the discovered `.sln`, and
+  must **not** port Java's per-file `groupByModuleRoot`/`analyzeByModule` for the single-solution
+  baseline (R2/R6 already assume a single resolvable `.sln`). This **drops** crap4java's multi-module
+  (multi-`.sln`) grouping — a fidelity reduction. **Escalate to Mr. Das at T14 as a departure
+  candidate** (log as approved departure if he takes resolve-once; otherwise preserve grouping by
+  calling `Resolve` per file and grouping by root). Cross-ref R2, R6, T11 (`CrapAnalyzer` per-method
+  `TypeName`/coverage lookup) and T12 (`CoverageRunner` `dotnet test` at the module root). Do **not**
+  silently drop grouping.
+- **W18 — Nonexistent-start-path normalization (below threshold today).** `Resolve` uses
+  `File.Exists(full) ? parent : full`, which diverges from Java's `isDirectory ? self : parent`
+  **only** for a nonexistent leaf (C# returns the leaf; Java returns its parent). Harmless in the
+  current pipeline (callers pass existing discovered paths; `ContainsMarker` no-ops on a nonexistent
+  dir, so the divergence surfaces only in the terminal no-marker fallback that B1 already redefines).
+  **If any future task routes an unverified/nonexistent path into `Resolve`**, switch to the zero-cost
+  faithful form `Directory.Exists(full) ? full : (Path.GetDirectoryName(full) ?? full)` and add a
+  nonexistent-leaf test (no current test exercises this).
+
 ### Open decision for Mr. Das (from T5, design-lane)
 
 - **D-T5 — CA1062 `ArgumentNullException.ThrowIfNull` idiom.** *(RESOLVED — Mr. Das ruled
@@ -249,6 +269,13 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   `build-test.md` edit. **If (a):** replace `build-test.md`'s final paragraph with the no-tagging
   reality (forward-looking: tag integration tests as they land). Either way the doc/reality gap must
   close at the ratification point.
+
+- **D-T13 — Module-root walk unbounded (B1) — ratification.** *(OPEN — light; escalated at the S3
+  boundary.)* `ModuleRootResolver` climbs **unbounded** to the filesystem root and falls back to the
+  **start directory** when no `.sln`/`.csproj` marker is found, vs crap4java's workspace-bounded walk /
+  `workspaceRoot` fallback. Anders recommends **approve-as-specced**; staged as **departure #6** in
+  `docs/decisions.md`, to be landed post-ruling. Below the behavioral bar for realistic C# layouts;
+  non-blocking (T13 already landed on this default).
 
 ### S5/S6 finale — design constraints (design-lane)
 
