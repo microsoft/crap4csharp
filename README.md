@@ -23,12 +23,13 @@ files.
 
 ## Coverage Pipeline
 
-For each invocation, per module (nearest `.sln`, else `.csproj`, else the project root):
+Each invocation resolves a **single module root** (nearest `.sln`, else `.csproj`, else the project
+root) and runs coverage **exactly once** there:
 
 1. Delete stale coverage artifacts:
    - `coverage/`
 2. Run `dotnet test --collect:"XPlat Code Coverage" --results-directory coverage`
-3. Read the produced `coverage.cobertura.xml`
+3. Read the produced `coverage.cobertura.xml` (one is picked when several exist — see Notes)
 4. Analyze the selected C# files
 
 ## Build and Test
@@ -93,4 +94,10 @@ dotnet run --project src/Crap4CSharp -c Release -- project-a project-b
 - **Fail fast:** if a module runs no tests or produces no coverage, `crap4csharp` exits non-zero
   rather than continuing — a deliberate, stricter departure from `crap4java`. A method simply absent
   from an otherwise-populated report is still reported as `N/A`.
+- **Multi-test-project coverage (interim limitation):** `dotnet test --collect` emits one
+  `coverage.cobertura.xml` per test project, and crap4csharp deterministically picks a single
+  (ordinal-first) report. On a solution with multiple test projects, methods covered only by the
+  non-picked projects have no matching entry and resolve to `N/A` — scoring as if uncovered and
+  inflating their CRAP. Multi-report aggregation is deferred; single-test-project layouts (the common
+  case) are unaffected.
 - Report output is sorted by CRAP descending, with `N/A` at the bottom.
