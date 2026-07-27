@@ -270,12 +270,11 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   reality (forward-looking: tag integration tests as they land). Either way the doc/reality gap must
   close at the ratification point.
 
-- **D-T13 — Module-root walk unbounded (B1) — ratification.** *(OPEN — light; escalated at the S3
-  boundary.)* `ModuleRootResolver` climbs **unbounded** to the filesystem root and falls back to the
-  **start directory** when no `.sln`/`.csproj` marker is found, vs crap4java's workspace-bounded walk /
-  `workspaceRoot` fallback. Anders recommends **approve-as-specced**; staged as **departure #6** in
-  `docs/decisions.md`, to be landed post-ruling. Below the behavioral bar for realistic C# layouts;
-  non-blocking (T13 already landed on this default).
+- **D-T13 — Module-root walk unbounded (B1) — ratification.** *(RESOLVED — Mr. Das approved.)*
+  `ModuleRootResolver` climbs **unbounded** to the filesystem root and falls back to the **start
+  directory** when no `.sln`/`.csproj` marker is found, vs crap4java's workspace-bounded walk /
+  `workspaceRoot` fallback. Recorded as **departure #6** in `docs/decisions.md`; T13 shipped as-is
+  (`e4d1329`), no rework. Below the behavioral bar for realistic C# layouts.
 
 ### S5/S6 finale — design constraints (design-lane)
 

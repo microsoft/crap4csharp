@@ -97,6 +97,15 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
    Java's *intent* (analyze human-authored `src`). It deliberately does **not** exclude checked-in
    generated files (`*.g.cs`/`*.Designer.cs`) that live under normal source folders — Java analyzed
    generated `.java` under `src` too, so broadening the filter would break parity.
+6. **Module-root walk unbounded (B1)** — `ModuleRootResolver.Resolve(startDirectory)` takes a single
+   start path (no `workspaceRoot`), climbs **unbounded** to the filesystem root, and falls back to the
+   **starting directory** when no `.sln`/`.csproj` marker is found — in place of crap4java's
+   `moduleRootFor(workspaceRoot, file)`, which bounds the climb to `workspaceRoot` and falls back to
+   `workspaceRoot`. Faithful to Java's *intent* (find the nearest module root at/above the start); the
+   bound is dropped because the C# CLI carries no separate Maven-style `workspaceRoot`, real C# trees
+   carry a `.sln`/`.csproj` so the walk terminates early, and termination at the filesystem root is
+   guaranteed either way. Marker precedence: nearest `.sln` → nearest `.csproj` → start dir. (Ruled by
+   Mr. Das; T13 shipped as `e4d1329`, no rework.)
 
 ## Cyclomatic complexity — authoritative node set
 
