@@ -35,6 +35,8 @@ the augmented complexity node set, and approved deliberate departures are in `do
 | S2 | Pure core (CRAP formula, report, CLI parse, domain types) with parity tests | S1 |
 | S3 | Ecosystem adapters (process exec, file finders, Roslyn parser, Cobertura parser) with parity tests | S1 |
 | S4 | Composition + CLI wiring + fail-fast + end-to-end | S2, S3 |
+| S5 | Independent clean-room evaluation: a neutral evaluator on gpt-5.6-sol judges the delivered port against the VERBATIM original Requirements block (report-only) | S4 |
+| S6 | Real-world dogfooding: run the finished crap4csharp on three real C# repos — crap4csharp, mutate4csharp, dry4csharp — producing actual CRAP reports | S4, S5 |
 
 ## Tasks (Tx)
 
@@ -49,7 +51,7 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T5  | S2 | `CliArgumentsParser` + `CliArgumentsParserTests` (7 cases) | Done | `1b7833b` |
 | T6  | S3 | `ICommandExecutor` + `ProcessCommandExecutor` + tests | Done | `da02028` |
 | T7  | S3 | `SourceFileFinder` (`src/**/*.cs`, exclude `bin`/`obj`, ordinal sort) + tests | Done | `1b90d24` |
-| T8  | S3 | `ChangedFileDetector` (git porcelain) + integration tests | Done | `(next commit)` |
+| T8  | S3 | `ChangedFileDetector` (git porcelain) + integration tests | Done | `c023ef8` |
 | T9  | S3 | `CSharpMethodParser` + `ComplexityWalker` (augmented node set) + CC oracle tests | Pending | - |
 | T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Pending | - |
 | T11 | S4 | `CrapAnalyzer` (exact→nearest-line lookup, per-method `TypeName`) + tests | Pending | - |
@@ -58,6 +60,8 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T14 | S4 | `CliApplication` + tests; **fail-fast gate** (no-coverage/empty-report → exit 1) | Pending | - |
 | T15 | S4 | `Program` entry (+ `CoverageException`) + integration tests (spawn built exe) | Pending | - |
 | T16 | S4 | README usage section + end-to-end smoke (positive + negative fail-fast) | Pending | - |
+| T17 | S5 | Independent evaluation on gpt-5.6-sol. Neutral sub-agent (NOT Anders/Dave/Bhaskar). Inputs = verbatim `## Requirements` block + read the delivered port + crap4java ONLY; must NOT read `docs/decisions.md`, rest of `docs/features`, `.github` playbook/agents, or any rationale. Report-only verdict to Mr. Das. | Pending (deferred) | - |
+| T18 | S6 | Dogfood crap4csharp on crap4csharp + `../mutate4csharp` + `../dry4csharp`; capture CRAP reports; summarize crappy methods to Mr. Das. | Pending (deferred) | - |
 
 Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 and T6/T7/T8/T13 parallelize early.
 
@@ -72,6 +76,10 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   match parsed method FQNs. Pin against a real coverlet sample (T10).
 - R4: Fail-fast changes ~4 parity tests (+2 new) — the one knowing test-verification break.
 - R5: FluentAssertions v8 licensing — the `[7.0.0,8.0.0)` pin + lock file must hold.
+- R6: crap4csharp requires each target to have a test project referencing `coverlet.collector` and a
+  resolvable module root (`.sln`), else fail-fast fires. `mutate4csharp`/`dry4csharp` may not satisfy
+  this and cannot be modified in place — S6 may surface tool gaps or need target prerequisites handled
+  on the copies. (Noted, not solved now.)
 
 ## Assumptions (Ax)
 
@@ -241,3 +249,15 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   `build-test.md` edit. **If (a):** replace `build-test.md`'s final paragraph with the no-tagging
   reality (forward-looking: tag integration tests as they land). Either way the doc/reality gap must
   close at the ratification point.
+
+### S5/S6 finale — design constraints (design-lane)
+
+- **D-S6 (design — resolved):** Per guardrail #2, `../mutate4csharp` and `../dry4csharp` are READ-ONLY
+  sibling repos; `crap4csharp` itself is write-scoped to this repo only. Because S6 runs
+  `dotnet test --collect`, which writes build/coverage artifacts (`bin`/`obj`/`TestResults`), S6 MUST
+  operate on COPIES of each target in a scratch/temp workspace OUTSIDE all source repos (e.g., under
+  `%TEMP%`), never writing into the sibling repos or into crap4csharp's own tree. Dogfooding
+  crap4csharp-on-crap4csharp likewise runs against a copy to avoid polluting the working tree. This
+  constraint governs T18 execution.
+- Also note the ordering: S6 runs only after everything through S5 is done and pushed (S6 depends on S4
+  and S5).
