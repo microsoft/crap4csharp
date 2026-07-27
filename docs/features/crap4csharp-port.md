@@ -1,6 +1,6 @@
 # Feature: crap4csharp — faithful C# port of crap4java
 **Branch:** vibe/crap4csharp-port
-**Status:** In progress — **S4 underway** (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 `e4d1329`, B1 ratify `d0784b3`, T9 `400d49d`, T10 `87488ce`, T11 `debf9de`, T12 next commit); **95 tests green, 0/0 Release**. Coverage pipeline (`CrapAnalyzer` + `CoverageRunner`/`CoverageReportLocator`) landed; next = T14 fail-fast gate → T15 `Program`/e2e → T16 README finalize. **Pause at the S4 boundary** for Mr. Das.
+**Status:** In progress — **S4 underway** (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 `e4d1329`, B1 ratify `d0784b3`, T9 `400d49d`, T10 `87488ce`, T11 `debf9de`, T12 `9041c2c`, T14 next commit); **112 tests green, 0/0 Release**. CLI composition + fail-fast gate landed (departure #1 exit 0/1/2, resolve-once #7); next = T15 `Program`/e2e (bare-catch → exit 1) → T16 README finalize. **Pause at the S4 boundary** for Mr. Das — that closes the core port (S1–S4).
 
 ## Requirements
 
@@ -56,9 +56,9 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T9  | S3 | `CSharpMethodParser` + `ComplexityWalker` (augmented node set) + CC oracle tests | Done | `400d49d` |
 | T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Done | `87488ce` |
 | T11 | S4 | `CrapAnalyzer` (exact→nearest-line lookup, per-method `TypeName`) + tests | Done | `debf9de` |
-| T12 | S4 | `CoverageRunner` (`dotnet test --collect`) + `CoverageReportLocator` + tests | Done | `(next commit)` |
+| T12 | S4 | `CoverageRunner` (`dotnet test --collect`) + `CoverageReportLocator` + tests | Done | `9041c2c` |
 | T13 | S4 | `ModuleRootResolver` (nearest `.sln` → `.csproj` → root) + tests | Done | `e4d1329` |
-| T14 | S4 | `CliApplication` + tests; **fail-fast gate** (no-coverage/empty-report → exit 1) | Pending | - |
+| T14 | S4 | `CliApplication` + tests; **fail-fast gate** (no-coverage/empty-report → exit 1) | Done | `(next commit)` |
 | T15 | S4 | `Program` entry (+ `CoverageException`) + integration tests (spawn built exe) | Pending | - |
 | T16 | S4 | README usage section + end-to-end smoke (positive + negative fail-fast) | Pending | - |
 | T17 | S5 | Module & test resolution finalization — **resolution model + test-project resolution + multi-report coverage aggregation**: Anders presents options — (a) keep the locked `.sln`-first model / (b) adopt mutate4csharp's nearest-`.csproj` owning project + `<Project>.Tests`/`<Project>.UnitTests` test-project resolution / (c) hybrid — per `../mutate4csharp` README §"Module & Test Resolution"; Mr. Das rules; then implement the chosen model — rework `ModuleRootResolver` (T13) and shape T12/T14. Module *grouping* is **no longer in scope** (removed by the resolve-once departure #7), but multi-report coverage **aggregation** IS now in scope (per single-pick departure #8) — replace T12's ordinal-first single-pick `CoverageReportLocator` with a union across the per-test-project `coverage.cobertura.xml` reports so multi-test-project solutions stop under-reporting. Keep running ALL module tests (crap4java parity); do NOT adopt unit-only `[Trait]` filtering. | Pending (deferred) | - |

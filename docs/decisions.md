@@ -242,6 +242,57 @@ with no Java counterpart (JaCoCo's report path was a fixed constant, so Java nee
   **throws** on command failure (faithful) and **returns `null`** when the report is absent (the new
   locate signal); every exit-code decision (departure #1) stays in T14.
 
+## T14 register — `CliApplication` + fail-fast gate (S4 close-out; Anders T14 review, 🟢)
+
+Resolved decisions and load-bearing invariants from the composition/orchestration layer.
+`CliApplication` is a faithful 1:1 port of `crap4java`'s `CliApplication`/`Main`
+(`execute`/`parseArguments`/`filesForMode`/`explicitFiles`/`maxCrap`/`thresholdExceeded`) with the
+`moduleRootFor` + `groupByModuleRoot`/`analyzeByModule` module-loop removed (departure #7). It composes
+already-shipped types only — no resolution/coverage/parse internals of its own — so the S5/T17
+resolution-model swap touches **only** `ModuleRootResolver` (D-T12b). **No new behavioral departure
+beyond the already-approved set #1–#8.**
+
+- **D-T14a — the exit-code table is the canonical CLI contract (T14 owns every exit).** `Execute`
+  returns exactly: **0** (`--help`; or no files → `"No C# files to analyze."` on stdout; or max
+  CRAP ≤ 8.0), **1** (parse error `ArgumentException` → `ex.Message` on stderr + usage on stdout; or a
+  fail-fast trigger; or a propagated exception realized at T15), **2** (`MaxCrap(metrics) > 8.0`, strict
+  → `"CRAP threshold exceeded: {max:F1} > 8.0"` on stderr, `InvariantCulture`). This realizes
+  departure #1 (exit 1 for fail-fast) and pins the exit-2 threshold path departure #1 did not
+  enumerate. Do not move an exit decision out of T14.
+
+- **D-T14b — three fail-fast triggers, greppable stderr anchors (departure #1).** All module/run-level;
+  the per-method `N/A` path (a method absent from a *populated* report) stays in `CrapAnalyzer`,
+  **unchanged**. (1) `CoverageReportLocator.Locate` returns `null` → anchor **`No coverage report was
+  produced`** → exit 1. (2) `CoberturaCoverageParser.Parse(report).Count == 0` → anchor **`contained no
+  coverage data`** → exit 1 — trigger 2 must inspect **`coverageMap.Count`, not the metrics** (a
+  populated-but-non-matching report also yields all-`N/A` metrics yet must NOT fail-fast). (3)
+  `CoverageRunner.GenerateCoverage` throws → **propagates** (anchor **`Coverage command failed with
+  exit`**), realized as exit 1 at T15. Mr. Das ruled the trigger 1/2 wording to these defaults; tests
+  assert only the bold anchor substring, so wording may re-tune without touching test structure.
+
+- **D-T14c — double-parse LOCKED (option A); the `Analyze(map)` overload is DEFERRED.** T14 calls
+  `CoberturaCoverageParser.Parse(report)` for the trigger-2 empty check, then
+  `CrapAnalyzer.Analyze(filesToAnalyze, report)` re-parses the same small XML — negligible cost
+  (dominated by the `dotnet test` run) and **zero API change** to a discharged T11 type
+  (fidelity-first). Option B — add `CrapAnalyzer.Analyze(IReadOnlyList<string>,
+  IReadOnlyDictionary<string, CoverageData>)` to share one parse — modifies a discharged API and is
+  **Mr. Das's call**; deferred, not required for T14.
+
+- **D-T14d — the T14/T15 propagation boundary (LOAD-BEARING for T15).** `Execute` does **not** catch
+  the coverage-runner / parser throw (faithful to Java `execute … throws Exception`); it propagates.
+  Java relied on the JVM exiting 1 on an uncaught exception, but **.NET does not guarantee exit 1 on an
+  unhandled exception**, so T15's `Program.Main` **must** catch and convert to exit 1. Mr. Das ruled the
+  mechanism = a **bare `catch`** (not a `CoverageException` wrapper; Java has none), **applied at T15**,
+  not T14. `Program.cs` stays the current stub until T15.
+
+- **Below the departure bar (no departure number, no ruling needed).** `MaxCrap`/`ThresholdExceeded`/
+  `Usage` are housed on `CliApplication` (T14), not on `Program` (T15) as Java put `maxCrap`/`usage` on
+  `Main` — avoids a composition→entry forward dependency and keeps T14 self-contained/testable; pure
+  organization, behavior/tests unchanged. Java's pre-format `metrics.sort` is omitted because both
+  `CrapAnalyzer` (T11) and `ReportFormatter` (T4) already apply the identical stable "scored desc, N/A
+  last" sort and `MaxCrap` is order-free (behavior-preserving). The single-line trigger-1 message
+  (avoids SA1118) is byte-identical to the fail-fast contract.
+
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
 1. **Fail fast** — when a module produces no coverage / runs no tests, exit non-zero (`1`) with a
