@@ -36,7 +36,7 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
 | Test framework | **xUnit** | + `Microsoft.NET.Test.Sdk`, `coverlet.collector` |
 | Assertions | **FluentAssertions 7.x**, pinned `[7.0.0,8.0.0)` | v8+ is commercial (Xceed); lock file enforces the pin |
 | Coverage key | Roslyn enclosing-type **FQN** per method | C# allows many types per file; filename keys mis-match Cobertura |
-| Module root | nearest **`.sln`** (fallback `.csproj` → project root) | so `dotnet test` actually runs tests |
+| Module root | nearest **`.sln`** (fallback `.csproj` → project root) | so `dotnet test` actually runs tests — **SUPERSEDED at T17 by departure #9 (Model B): the owning unit is the nearest `.csproj` (bounded); `.sln` is no longer a marker** |
 
 ## Ratified conventions (Mr. Das)
 
@@ -214,6 +214,15 @@ with no Java counterpart (JaCoCo's report path was a fixed constant, so Java nee
   (`.sln` vs `.csproj` vs hybrid) turns on: that swap must change **only** `ModuleRootResolver` —
   `CoverageRunner`/`CoverageReportLocator` stay untouched because they never learn *how* the root was
   found. Do not reintroduce a resolver call into either type.
+  - **T17 amendment (Model B; ratified by Mr. Das, FLAG-9).** The S5/T17 swap did **not** stay confined
+    to `ModuleRootResolver`: that type is retired/renamed to `OwningProjectResolver` and a new
+    `TestProjectResolver` is added (departure #9), and `CoverageRunner.GenerateCoverage` gains a
+    `testProject` token + explicit `coverageBaseDirectory` parameter (departures #9/#10). Only
+    `CoverageReportLocator` stayed code-identical. Revised seam promise: **resolution + the runner's
+    `dotnet test` target change; the locator and the `ResultsDirectoryName` reciprocal contract (D-T12e)
+    are preserved.** The decoupling INTENT survives — coverage/locate still take a pre-resolved
+    `_projectRoot` and never resolve on their own — but the "swap touches only `ModuleRootResolver`"
+    letter is void.
 
 - **D-T12e — `ResultsDirectoryName` is a frozen reciprocal contract (single source of truth).** The
   results-directory name `"coverage"` is declared **once** as `public const
@@ -252,7 +261,9 @@ Resolved decisions and load-bearing invariants from the composition/orchestratio
 (`execute`/`parseArguments`/`filesForMode`/`explicitFiles`/`maxCrap`/`thresholdExceeded`) with the
 `moduleRootFor` + `groupByModuleRoot`/`analyzeByModule` module-loop removed (departure #7). It composes
 already-shipped types only — no resolution/coverage/parse internals of its own — so the S5/T17
-resolution-model swap touches **only** `ModuleRootResolver` (D-T12b). **No new behavioral departure
+resolution-model swap touches **only** `ModuleRootResolver` (D-T12b) [**superseded at T17: the swap
+reshaped `CoverageRunner` and split resolution into `OwningProjectResolver` + `TestProjectResolver`
+(departures #9/#10) — see the amended D-T12b and the T17 register**]. **No new behavioral departure
 beyond the already-approved set #1–#8.**
 
 - **D-T14a — the exit-code table is the canonical CLI contract (T14 owns every exit).** `Execute`
@@ -318,8 +329,9 @@ adds no logic of its own. **No new behavioral departure beyond the already-appro
   single expression; there is **no** intermediate `Run`/composition-root method, and
   `MaxCrap`/`Usage`/`ThresholdExceeded` stay on `CliApplication` (D-T14b), not on `Program` (where Java
   put `maxCrap`/`usage` on `Main`). This avoids a composition→orchestration forward dependency and keeps
-  the S5/T17 resolution-model swap localized to `ModuleRootResolver` (D-T12b) — `Program` never learns
-  how the root is found.
+  the S5/T17 resolution-model swap localized to the resolution seam (D-T12b) — at T17 that seam became
+  `OwningProjectResolver` + `TestProjectResolver` (departure #9), no longer the single
+  `ModuleRootResolver`; either way `Program` never learns how the root is found.
 
 - **D-T15b — `CoverageException` + the specific `catch (CoverageException) → return 1` REALIZES and
   DISCHARGES the D-T14d boundary (LOAD-BEARING on both ends).** `CoverageRunner.GenerateCoverage` throws
@@ -345,9 +357,10 @@ adds no logic of its own. **No new behavioral departure beyond the already-appro
 
 - **D-T15c — `projectRoot = Path.GetFullPath(".")` (LOAD-BEARING for downstream path combines).** Mirrors
   Java `Path.of(".").toAbsolutePath().normalize()`: an absolute, normalized current directory. Every
-  downstream combine/resolve (`ModuleRootResolver.Resolve`, the coverage results dir, explicit-file
-  resolution) assumes an absolute normalized root, so this exact spelling is load-bearing — do not pass a
-  bare `"."`.
+  downstream combine/resolve (at T17 `OwningProjectResolver.ResolveOwningProjects` /
+  `TestProjectResolver.ResolveTestProject`, formerly `ModuleRootResolver.Resolve`; the coverage results
+  dir; explicit-file resolution) assumes an absolute normalized root, so this exact spelling is
+  load-bearing — do not pass a bare `"."`.
 
 - **D-T15d — spawn resolution: `dotnet <Microsoft.Crap4CSharp.dll>` via `AppContext.BaseDirectory`.** The
   app assembly is `Microsoft.Crap4CSharp.dll` (`Common.targets`:
@@ -421,13 +434,83 @@ the already-approved set #1–#8.**
   `Execute`-level exit-2 pin (`CliApplicationTests` #12 `ReturnsTwoWhenCrapThresholdExceeded`) is
   unchanged.
 
-- **D-T20d — NOT a new departure (no departure #9).** T20 **restores** Java's `main throws Exception`
-  "any failure → non-zero" contract rather than departing from it, so there is **no** new departure
-  number and **no** edit to departure #1 or its exit table (D-T14a); departures #1–#8 are untouched. A
-  future reader should **not** expect a departure entry for T20 — the reconciliation lives in the amended
-  T14/T15 registers (D-T14b / D-T14d / D-T15b / D-T15e) and this T20 register. **D-T15a preserved** —
+- **D-T20d — NOT a new departure (T20 adds no departure number).** T20 **restores** Java's
+  `main throws Exception` "any failure → non-zero" contract rather than departing from it, so **T20**
+  introduces **no** new departure number and makes **no** edit to departure #1 or its exit table
+  (D-T14a). *(Historical note: at T20 the ledger stood at #1–#8. Departures **#9** (Model B resolution)
+  and **#10** (unit-only target-test filter) were added by the later-executed **T17/S5** slice — a
+  separate task — so the original "no departure #9 / #1–#8 untouched" wording refers to **T20's**
+  contribution, not the final ledger; see the departures list and the T17 register.)* A future reader
+  should **not** expect a departure entry for T20 — its reconciliation lives in the amended T14/T15
+  registers (D-T14b / D-T14d / D-T15b / D-T15e) and this T20 register. **D-T15a preserved** —
   `Program` stays a thin, seam-less entry point (no `Run` method); the catch-all parity path is exercised
   end-to-end through the real entry point by the spawn test, needing no injection seam.
+
+## T17 register — Module & test resolution finalization (Model B); S5 close-out (Anders T17 review, 🟢)
+
+Resolved decisions and load-bearing invariants from the S5 resolution-finalization slice (executed after
+S6/T20). Mr. Das ruled **Model B**: a bounded nearest-`.csproj` owning-project resolver plus a
+`<Project>.Tests`/`.UnitTests` transitive-`ProjectReference` test-project resolver, running the ONE
+resolved test project's **unit** tests. Adds departures **#9** (Model B resolution) and **#10**
+(unit-only target-test filter); **supersedes #6**, **retires #8**, **keeps/reaffirms #7**. See those
+departure entries for the behavioral contract; this register records the seam reshape, the rulings, and
+the invariants.
+
+- **D-T17a — the resolver split is a genuine SRP seam (Model B).** `OwningProjectResolver` (pure bounded
+  FS walk → owning `.csproj` file paths) and `TestProjectResolver` (XML/graph parse of `ProjectReference`
+  closures) are two focused static resolvers, orchestrated by `CliApplication.Execute` (which owns the
+  resolve-once *policy* and every exit, D-T14a). Rejected: a single mega-resolver returning a record
+  (hides two different concerns behind one API; the graph logic is harder to unit-test in isolation).
+
+- **D-T17b — span policy = FAIL-FAST exit 1 (Mr. Das ruling; DECISION 1).** When the analyzed files
+  resolve to **>1** distinct owning project, `Execute` fail-fasts with anchor **`span multiple
+  projects`** (exit 1) — NOT an ordinal-first pick. Model B runs ONE test project per run; silently
+  picking one owner would re-introduce the cross-project misattribution (project-B files scored against
+  project-A coverage → all-`N/A` → inflated CRAP → possibly spurious exit 2) that departure #8 was
+  retired to remove. The normal single-project baseline (R2/R6) yields exactly one owner in all three CLI
+  modes, so this only bites multi-project trees, which the user must narrow.
+
+- **D-T17c — append-only numbering (Mr. Das ruling; DECISION 2).** Departure **#9** is APPENDED; #6 is
+  annotated **SUPERSEDED by #9**, #8 annotated **RETIRED/CLOSED by #9**, #7 **KEPT/reaffirmed** — all
+  in-place bodies retained for audit, none rewritten. The prior T20 register's "no departure #9 / #1–#8
+  untouched" wording is scoped to **T20's** contribution; #9/#10 are this slice's additions (D-T20d
+  annotated accordingly).
+
+- **D-T17d — unit-only target-test filter (departure #10; reverses the earlier stance).** The resolved
+  target test project runs under `--filter "type!=IntegrationTests"` (exclusion form; untagged INCLUDED
+  because VSTest treats an absent `type` as `!=` any value). `CoverageRunner.UnitTestFilter`
+  (`private const`, never `internal`) is the single adjustable source of truth; narrowing to
+  `{UnitTests, absent}` is the one-line append `&type!=Unit`. Mirrors mutate4csharp **minus** its
+  mutation-cycle-only `Category!=no-mutate` clause (no crap4csharp analog — coverage runs once). Our
+  fail-fasts are exit **1**, not mutate4csharp's **2**. Proven behaviorally by
+  `CoverageFilterBehaviorTests` (real nested `dotnet test`), token-pinned by `CoverageRunnerTests`.
+
+- **D-T17e — malformed-EXISTING `.csproj` treated as zero references (FLAG-1 resolution; Anders
+  in-lane).** `TestProjectResolver.DirectProjectReferences` wraps `XDocument.Load` in
+  `catch (XmlException) → return []`, so an existing-but-malformed `.csproj` in a name-matching
+  candidate's transitive closure contributes zero references instead of throwing (`File.Exists` already
+  guards the MISSING branch). This makes the type's own "missing/unparseable … skip, never throw" comment
+  TRUE and matches the ratified non-throwing marker-probe discipline (`OwningProjectResolver`,
+  `CoverageReportLocator`, `SourceFileFinder`); because `OrderBy` forces `ReferencesTransitively` over
+  every name-matching candidate, this prevents a stray malformed candidate from aborting otherwise-
+  successful speculative resolution. Scope: **`XmlException` only** (CA1031-clean, no suppression — the
+  `[Program.cs]` CA1031 relaxation D-T20b does NOT extend here); genuine FS faults (`IOException`) still
+  propagate to the T20 catch-all (exit 1). Pinned by
+  `TreatsMalformedExistingCandidateAsZeroReferencesAndResolvesValidSibling`.
+
+- **D-T17f — fail-fast triggers grow 2 → 4 (+1 span); new greppable anchors (departure #1; extends
+  D-T14b).** `Execute` now fail-fasts on **`No owning .csproj`**, **`span multiple projects`** (DECISION
+  1), and **`No test project`** — all BEFORE any coverage run (assert the runner is not invoked) — then
+  the two existing post-run triggers **`No coverage report was produced`** / **`contained no coverage
+  data`**. The exit table (D-T14a) is structurally unchanged (0/1/2); resolution adds only new exit-1
+  reasons. Tests assert the bold anchor substring, so wording may re-tune freely.
+
+- **D-T17g — D-T12b/D-T14/D-T15a seam promise amended (FLAG-9 ratified).** The "S5/T17 swap touches only
+  `ModuleRootResolver`" promise is **broken by design**: resolution split into
+  `OwningProjectResolver` + `TestProjectResolver`, and `CoverageRunner.GenerateCoverage` gained a
+  `testProject` token + `coverageBaseDirectory`. Only `CoverageReportLocator` stayed code-identical; the
+  D-T12e `ResultsDirectoryName` reciprocal contract and coverage-base = `_projectRoot` are preserved. The
+  decoupling INTENT survives (coverage/locate take a pre-resolved root and never resolve on their own).
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
@@ -463,7 +546,10 @@ the already-approved set #1–#8.**
    Java's *intent* (analyze human-authored `src`). It deliberately does **not** exclude checked-in
    generated files (`*.g.cs`/`*.Designer.cs`) that live under normal source folders — Java analyzed
    generated `.java` under `src` too, so broadening the filter would break parity.
-6. **Module-root walk unbounded (B1)** — `ModuleRootResolver.Resolve(startDirectory)` takes a single
+6. **Module-root walk unbounded (B1)** — **[SUPERSEDED at T17 by departure #9 (Model B): the unbounded
+   `.sln`-first directory walk is replaced by a BOUNDED nearest-`.csproj` owning-project resolver
+   (`OwningProjectResolver`) that never climbs above the invocation root; `.sln` is no longer a marker.
+   Body retained for audit.]** `ModuleRootResolver.Resolve(startDirectory)` takes a single
    start path (no `workspaceRoot`), climbs **unbounded** to the filesystem root, and falls back to the
    **starting directory** when no `.sln`/`.csproj` marker is found — in place of crap4java's
    `moduleRootFor(workspaceRoot, file)`, which bounds the climb to `workspaceRoot` and falls back to
@@ -485,7 +571,12 @@ the already-approved set #1–#8.**
    apply this at T11/T12/T14; no group-loop tests are ported. (Ruled by Mr. Das; supersedes watch-item
    **W17**.)
 
-8. **Single-pick coverage report (ordinal-first)** — `CoverageReportLocator` (T12) deterministically
+8. **Single-pick coverage report (ordinal-first)** — **[RETIRED/CLOSED at T17 by departure #9 (Model B):
+   one owning project → one test project → exactly one `coverage.cobertura.xml`, so the multi-report
+   ordinal-first single-pick and its DEFERRED aggregation are no longer needed (not implemented, not
+   deferred); `CoverageReportLocator` keeps the ordinal-first `FirstOrDefault` as harmless defensive
+   determinism over the single expected report. Body retained for audit.]** `CoverageReportLocator`
+   (T12) deterministically
    selects **one** `coverage.cobertura.xml` via an **ordinal-first single pick** over the discovered
    report paths, and hands that single file to `CoberturaCoverageParser.Parse` (T10). Root-cause
    mismatch: coverlet emits **one report per test project** (`dotnet test --collect` drops a
@@ -503,6 +594,54 @@ the already-approved set #1–#8.**
    the same shape as T10's single-path `Parse`. **Mr. Das-approved; multi-report coverage AGGREGATION
    (unioning the per-test-project reports) is DEFERRED to S5/T17**, whose scope now also owns report
    aggregation so multi-test-project solutions stop under-reporting. (Ruled by Mr. Das.)
+
+9. **Module & test resolution (Model B)** — replaces the retired departure #6 walk with two bounded,
+   deterministic stages, both scoped to the invocation root `_projectRoot` and never climbing above it.
+   **(i) Owning project** = the nearest `.csproj` **file** at or above each analyzed `.cs`, found by
+   `OwningProjectResolver` (renamed/reshaped from `ModuleRootResolver`): a **bounded** upward walk that
+   stops at the invocation root, fixing the S6 unbounded ancestor climb. `.sln` is **no longer a
+   marker** — the owning unit in the .NET ecosystem is a `.csproj`. The distinct owning set across the
+   analyzed files is reduced ordinal-first, and **departure #7 (resolve-once) is KEPT/reaffirmed**: a
+   run resolves exactly ONE owning project. **(ii) Test project** = `<Project>.Tests.csproj` **or**
+   `<Project>.UnitTests.csproj` whose `ProjectReference`s **transitively** include the owning project,
+   found by the new `TestProjectResolver` (recursive `.csproj` scan under the root, `bin`/`obj` excluded
+   per departure #5, cycle-safe transitive walk, ordinal-first tie-break, non-throwing on
+   missing/malformed `.csproj`). Coverage then runs **once** against that ONE test project, producing
+   exactly ONE `coverage.cobertura.xml`. **New fail-fasts (exit 1 — our convention, NOT mutate4csharp's
+   2; realizes departure #1), all fired BEFORE any coverage run:** `No owning .csproj` (no owner within
+   bounds); `span multiple projects` (analyzed files resolve to >1 owning project — **Mr. Das ruled
+   FAIL-FAST, not ordinal-pick**, to avoid re-introducing the silent cross-project misattribution
+   departure #8 was retired to remove); `No test project` (no matching `.Tests`/`.UnitTests`
+   transitively referencing the owner). **Load-bearing:** the `.Tests`/`.UnitTests` **naming-convention
+   dependency** and **fail-fast-on-absence** are required for a target to be analyzable. **Supersedes
+   departure #6** (unbounded `.sln`-first walk) and **retires/closes departure #8** (multi-report
+   ordinal-first single-pick + deferred aggregation — one test project now means one report, so
+   aggregation is neither implemented nor deferred). Ecosystem adaptation of crap4java §6 (Maven
+   module-root `pom.xml` walk) plus mutate4csharp's owning-project + `.Tests` model; the knowing
+   departure from crap4java parity on WHICH tests run is departure #10. (Ruled by Mr. Das: Model B;
+   append #9; span → fail-fast; #6 superseded; #8 retired; #7 kept.)
+
+10. **Unit-only test selection on analyzed targets** — the resolved target test project runs as
+    `dotnet test <TestProject> --collect:"XPlat Code Coverage" --filter "type!=IntegrationTests"
+    --results-directory coverage`, so **only the target's UNIT tests** produce coverage. A target test
+    is a unit test unless it is tagged `[Trait("type", "IntegrationTests")]`; tests tagged `type` =
+    `UnitTests` or `Unit`, **and untagged tests**, all run. The **exclusion form is mandatory and
+    load-bearing:** VSTest treats an **absent** `type` property as satisfying `!=` any value, so
+    **untagged target tests are INCLUDED** (an inclusion form such as `type=UnitTests` would WRONGLY
+    drop untagged tests). The single adjustable source of truth is `private const
+    CoverageRunner.UnitTestFilter` (least-privilege — never `internal`, golden rule #9); narrowing
+    "unit" to strictly `{UnitTests, absent}` is the one-line, still-exclusion-form append
+    `"type!=IntegrationTests&type!=Unit"` (untagged stays included). This **mirrors mutate4csharp**
+    **minus** its mutation-cycle-only `Category!=no-mutate` clause — which excludes tests that
+    recursively start `dotnet`/coverage per mutant run and has **no crap4csharp analog** (coverage runs
+    once, no mutant loop), hence **out of scope**. **Knowing departure from crap4java parity:** crap4java
+    ran **ALL** of a resolved module's tests (`mvn test`, no unit/integration split); #10 changes WHICH
+    target tests execute (hence which coverage is produced), not crap4csharp's own analysis logic, and
+    is faithful to intent (exercise the code unit under analysis with its unit tests). A pathological
+    target whose entire suite is `type=IntegrationTests` yields no coverage → the existing report
+    fail-fasts fire (`No coverage report was produced` / `contained no coverage data`, exit 1) — **no
+    new exit code**. (Ruled by Mr. Das: reverses the earlier "all tests / no `--filter`" stance; carry
+    ONLY the `type!=IntegrationTests` clause.)
 
 ## Cyclomatic complexity — authoritative node set
 
@@ -536,6 +675,19 @@ The single knowing parity break: ~4 `CliApplication`/`Program` coverage-path tes
 
 Separately, **departure #7 (resolve-once)** adapts crap4java's module-grouping tests to a single
 resolve + single coverage run (or drops them) — no module-group-loop tests are ported (T11/T12/T14).
+
+**T17/S5 (Model B, departures #9/#10).** `ModuleRootResolverTests` is renamed/reshaped to
+`OwningProjectResolverTests` (bounded nearest-`.csproj`; the `.sln`-precedence cases are DROPPED — `.sln`
+is no longer a marker); a new `TestProjectResolverTests` covers the `.Tests`/`.UnitTests` naming gate,
+transitive/cycle-safe `ProjectReference` reachability, `bin`/`obj` + bounded-scope exclusion, and the
+non-throwing missing/**malformed-existing** `.csproj` discipline (FLAG-1); `CliApplicationTests` gains
+on-disk owning+test `.csproj` fixtures plus **+3** absence tests (`No owning .csproj`, `No test project`,
+`span multiple projects`). `CoverageRunnerTests` is retargeted to the
+`GenerateCoverage(testProject, coverageBaseDirectory)` signature and pins the unit-only `--filter` **token
+pair**; the new `CoverageFilterBehaviorTests` spawns a REAL `dotnet test --filter "type!=IntegrationTests"`
+to prove untagged RUNS + `type=IntegrationTests` EXCLUDED (departure #10). crap4java's module-grouping /
+all-tests parity tests remain **ADAPTED** (resolve-once) or **DROPPED** — none assert running every module
+test after #10.
 
 ## Environment adaptations (from nucleus)
 

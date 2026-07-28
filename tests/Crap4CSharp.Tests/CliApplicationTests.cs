@@ -1,16 +1,16 @@
 namespace Microsoft.Crap4CSharp.Tests;
 
-// Ports crap4java's CliApplicationTest + MainTest into the T14 composition layer, adapted for the two
-// ratified departures that reshape these tests: #1 (fail-fast) and #7 (resolve-once). CliApplication is
-// exercised directly (no Program/T15), injecting a fake ICommandExecutor via CoverageRunner -- exactly the
-// Java `CoverageRunner((command, directory) -> ...)` seam -- so no real `dotnet test` is ever launched.
-// Java dispositions (see the T14 contract §6): parseErrors/noFiles/threshold/help/maxCrap ports; the
-// coverage-path tests (doesNotWarnWhenJacocoXmlExists, explicitFileArgsAreAnalyzed,
-// directoryArg..., and the replaced explicitFileUsesOwningModule...) now require a WRITTEN report to reach
-// exit 0 because the Java "warn + N/A + exit 0" no-report branch is now fail-fast; two dedicated fail-fast
-// tests (#10, #11) plus C#-specific exit-2 (#12) and trigger-3 propagation (#13) tests are added. Fixtures
-// are modeled on CrapAnalyzerTests.Alpha75Xml; temp trees are always removed in a finally; test names are
-// PascalCase (C2/CA1707) while fixture member names inside string literals keep crap4java's lowercase.
+// Ports crap4java's CliApplicationTest + MainTest into the T14 composition layer, reshaped for Model B
+// (departures #9/#10) on top of the earlier #1 (fail-fast) and #7 (resolve-once). CliApplication is exercised
+// directly (no Program/T15), injecting a fake ICommandExecutor via CoverageRunner -- exactly the Java
+// `CoverageRunner((command, directory) -> ...)` seam -- so no real `dotnet test` is ever launched. Every test
+// that must reach the coverage run now scaffolds an on-disk owning project (src/Foo/Foo.csproj), a test project
+// (tests/Foo.Tests/Foo.Tests.csproj transitively referencing it), and the analyzed .cs under src/Foo/, so
+// OwningProjectResolver + TestProjectResolver resolve. Three new fail-fast tests pin the Model B absence/span
+// exits (no owning project, no test project, files span multiple projects), each asserting the runner was NOT
+// invoked (fake.Directories empty). Fixtures are modeled on CrapAnalyzerTests.Alpha75Xml; temp trees are always
+// removed in a finally; test names are PascalCase (C2/CA1707) while fixture member names in string literals keep
+// crap4java's lowercase.
 public class CliApplicationTests
 {
     private const string AlphaSampleSource = """
@@ -55,7 +55,7 @@ public class CliApplicationTests
         """;
 
     // 1 <- CliApplicationTest.parseErrorsReturnUsageAndExitOne. --changed combined with a file arg throws
-    // ArgumentException (W6), caught -> message to stderr, usage to stdout, exit 1.
+    // ArgumentException (W6), caught -> message to stderr, usage to stdout, exit 1 (before resolution).
     [Fact]
     public void ParseErrorsReturnUsageAndExitOne()
     {
@@ -73,8 +73,7 @@ public class CliApplicationTests
         });
     }
 
-    // 2 <- CliApplicationTest.returnsZeroWhenNoFilesAreFound (message adapted to C#). No src/ -> no files ->
-    // exit 0 BEFORE any coverage run.
+    // 2 <- CliApplicationTest.returnsZeroWhenNoFilesAreFound. No src/ -> no files -> exit 0 BEFORE resolution.
     [Fact]
     public void ReturnsZeroWhenNoFilesAreFound()
     {
@@ -100,12 +99,12 @@ public class CliApplicationTests
     {
         WithTempRoot(root =>
         {
-            WriteFile(root, "Sample.cs", AlphaSampleSource);
+            string source = ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
             using StringWriter output = new();
             using StringWriter error = new();
             CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, Alpha75Xml)));
 
-            int exit = app.Execute(["Sample.cs"]);
+            int exit = app.Execute([source]);
 
             exit.Should().Be(0);
             output.ToString().Should().Contain("Sample");
@@ -155,19 +154,18 @@ public class CliApplicationTests
         CliApplication.MaxCrap(metrics).Should().Be(7.0);
     }
 
-    // 7 <- MainTest.explicitFileArgsAreAnalyzed (adapted: a written report is now required for exit 0).
+    // 7 <- MainTest.explicitFileArgsAreAnalyzed (adapted: owning+test scaffolding + a written report).
     [Fact]
     public void ExplicitFileArgsAreAnalyzed()
     {
         WithTempRoot(root =>
         {
-            string relative = Path.Combine("src", "demo", "Sample.cs");
-            WriteFile(root, relative, AlphaSampleSource);
+            string source = ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
             using StringWriter output = new();
             using StringWriter error = new();
             CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, Alpha75Xml)));
 
-            int exit = app.Execute([relative]);
+            int exit = app.Execute([source]);
 
             exit.Should().Be(0);
             output.ToString().Should().Contain("Sample");
@@ -176,13 +174,13 @@ public class CliApplicationTests
     }
 
     // 8 <- MainTest.directoryArgAnalyzesJavaFilesUnderThatDirectorySrc (adapted). A directory arg expands via
-    // SourceFileFinder under <dir>/src (W12); a written report reaches exit 0.
+    // SourceFileFinder under <dir>/src (W12); owning+test are scaffolded under the module-a subtree.
     [Fact]
     public void DirectoryArgAnalyzesCSharpFilesUnderThatDirectorySrc()
     {
         WithTempRoot(root =>
         {
-            WriteFile(root, Path.Combine("module-a", "src", "demo", "Sample.cs"), AlphaSampleSource);
+            ScaffoldModule(Path.Combine(root, "module-a"), "Foo", "Sample.cs", AlphaSampleSource);
             using StringWriter output = new();
             using StringWriter error = new();
             CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, Alpha75Xml)));
@@ -195,41 +193,47 @@ public class CliApplicationTests
         });
     }
 
-    // 9 -- replaces CliApplicationTest.explicitFileUsesOwningModuleForCoverageAndJacocoXml (departure #7).
-    // Coverage runs EXACTLY ONCE at ModuleRootResolver.Resolve(projectRoot) with the locked token list.
+    // 9 -- replaces RunsCoverageOnceAtResolvedModuleRoot (Model B). Coverage runs EXACTLY ONCE, at the
+    // invocation root as coverage base, against the RESOLVED test project, with the locked unit-only token list.
     [Fact]
-    public void RunsCoverageOnceAtResolvedModuleRoot()
+    public void RunsCoverageOnceAtResolvedTestProject()
     {
         WithTempRoot(root =>
         {
-            WriteFile(root, "Sample.cs", AlphaSampleSource);
+            string source = ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
             using StringWriter output = new();
             using StringWriter error = new();
             FakeExecutor fake = new(0, Alpha75Xml);
             CliApplication app = new(root, output, error, new CoverageRunner(fake));
 
-            int exit = app.Execute(["Sample.cs"]);
+            int exit = app.Execute([source]);
 
             exit.Should().Be(0);
+
+            string? owning = OwningProjectResolver.ResolveOwningProject(source, root);
+            owning.Should().NotBeNull();
+            string? expectedTestProject = TestProjectResolver.ResolveTestProject(owning!, root);
+            expectedTestProject.Should().NotBeNull();
+
             fake.Directories.Should().ContainSingle();
-            fake.Directories[0].Should().Be(ModuleRootResolver.Resolve(root));
+            fake.Directories[0].Should().Be(root);
             fake.Commands[0].Should().Equal(
-                "dotnet", "test", "--collect:XPlat Code Coverage", "--results-directory", "coverage");
+                "dotnet", "test", expectedTestProject!, "--collect:XPlat Code Coverage", "--filter", "type!=IntegrationTests", "--results-directory", "coverage");
         });
     }
 
-    // 10 -- FAIL-FAST TRIGGER 1: the runner succeeds but emits no report -> exit 1, stderr anchor.
+    // 10 -- FAIL-FAST TRIGGER 1: resolution passes but the runner emits no report -> exit 1, stderr anchor.
     [Fact]
     public void FailsFastWhenNoCoverageReportProduced()
     {
         WithTempRoot(root =>
         {
-            WriteFile(root, "Sample.cs", AlphaSampleSource);
+            string source = ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
             using StringWriter output = new();
             using StringWriter error = new();
             CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, null)));
 
-            int exit = app.Execute(["Sample.cs"]);
+            int exit = app.Execute([source]);
 
             exit.Should().Be(1);
             error.ToString().Should().Contain("No coverage report was produced");
@@ -242,13 +246,13 @@ public class CliApplicationTests
     {
         WithTempRoot(root =>
         {
-            WriteFile(root, "Sample.cs", AlphaSampleSource);
+            string source = ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
             using StringWriter output = new();
             using StringWriter error = new();
             const string emptyReport = "<?xml version=\"1.0\"?><coverage><packages></packages></coverage>";
             CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, emptyReport)));
 
-            int exit = app.Execute(["Sample.cs"]);
+            int exit = app.Execute([source]);
 
             exit.Should().Be(1);
             error.ToString().Should().Contain("contained no coverage data");
@@ -307,12 +311,12 @@ public class CliApplicationTests
 
         WithTempRoot(root =>
         {
-            WriteFile(root, "Sample.cs", riskySource);
+            string source = ScaffoldModule(root, "Foo", "Sample.cs", riskySource);
             using StringWriter output = new();
             using StringWriter error = new();
             CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, zeroCoverageXml)));
 
-            int exit = app.Execute(["Sample.cs"]);
+            int exit = app.Execute([source]);
 
             exit.Should().Be(2);
             error.ToString().Should().Contain("CRAP threshold exceeded");
@@ -326,12 +330,12 @@ public class CliApplicationTests
     {
         WithTempRoot(root =>
         {
-            WriteFile(root, "Sample.cs", AlphaSampleSource);
+            string source = ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
             using StringWriter output = new();
             using StringWriter error = new();
             CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(2, null)));
 
-            Action act = () => app.Execute(["Sample.cs"]);
+            Action act = () => app.Execute([source]);
 
             act.Should().Throw<CoverageException>()
                 .WithMessage("Coverage command failed with exit 2");
@@ -387,6 +391,74 @@ public class CliApplicationTests
         act.Should().Throw<ArgumentNullException>().WithParameterName("coverageRunner");
     }
 
+    // 18 -- NEW (Model B fail-fast): files present but NO owning .csproj under the root -> exit 1, stderr
+    // anchor; the runner is NEVER invoked (resolution fail-fasts before coverage).
+    [Fact]
+    public void FailsFastWhenNoOwningProject()
+    {
+        WithTempRoot(root =>
+        {
+            WriteFile(root, Path.Combine("src", "demo", "Sample.cs"), AlphaSampleSource);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            FakeExecutor fake = new(0, Alpha75Xml);
+            CliApplication app = new(root, output, error, new CoverageRunner(fake));
+
+            int exit = app.Execute([]);
+
+            exit.Should().Be(1);
+            error.ToString().Should().Contain("No owning .csproj");
+            fake.Directories.Should().BeEmpty();
+        });
+    }
+
+    // 19 -- NEW (Model B fail-fast): an owning .csproj exists but no .Tests/.UnitTests references it -> exit 1,
+    // stderr anchor; the runner is NEVER invoked.
+    [Fact]
+    public void FailsFastWhenNoTestProject()
+    {
+        WithTempRoot(root =>
+        {
+            string srcDir = Path.Combine(root, "src", "Foo");
+            Directory.CreateDirectory(srcDir);
+            File.WriteAllText(Path.Combine(srcDir, "Foo.csproj"), MinimalProject());
+            string source = Path.Combine(srcDir, "Sample.cs");
+            File.WriteAllText(source, AlphaSampleSource);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            FakeExecutor fake = new(0, Alpha75Xml);
+            CliApplication app = new(root, output, error, new CoverageRunner(fake));
+
+            int exit = app.Execute([source]);
+
+            exit.Should().Be(1);
+            error.ToString().Should().Contain("No test project");
+            fake.Directories.Should().BeEmpty();
+        });
+    }
+
+    // 20 -- NEW (Model B fail-fast, FLAG-1 default): analyzed files resolve to two distinct owning projects ->
+    // exit 1, stderr anchor; the runner is NEVER invoked.
+    [Fact]
+    public void FailsFastWhenFilesSpanMultipleProjects()
+    {
+        WithTempRoot(root =>
+        {
+            string sourceA = ScaffoldModule(root, "Foo", "A.cs", AlphaSampleSource);
+            string sourceB = ScaffoldModule(root, "Bar", "B.cs", AlphaSampleSource);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            FakeExecutor fake = new(0, Alpha75Xml);
+            CliApplication app = new(root, output, error, new CoverageRunner(fake));
+
+            int exit = app.Execute([sourceA, sourceB]);
+
+            exit.Should().Be(1);
+            error.ToString().Should().Contain("span multiple projects");
+            fake.Directories.Should().BeEmpty();
+        });
+    }
+
     private static void WithTempRoot(Action<string> test)
     {
         string root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -412,10 +484,36 @@ public class CliApplicationTests
         return path;
     }
 
-    // The one shared fake seam (contract §7): records each command + workingDirectory and, when configured
-    // with report XML, writes it under <workingDirectory>/coverage/<guid>/coverage.cobertura.xml (the
-    // D-T12e reciprocal path CoverageReportLocator reads), then returns the configured exit code. No real
-    // process is ever launched.
+    // Scaffolds a Model B target under moduleDir: src/<project>/<project>.csproj (owning), the analyzed source
+    // src/<project>/<sourceFileName>, and tests/<project>.Tests/<project>.Tests.csproj transitively referencing
+    // the owning project. Returns the absolute analyzed-source path (usable verbatim as an explicit file arg,
+    // since ExplicitFiles combines it with the rooted projectRoot and an absolute arg wins).
+    private static string ScaffoldModule(string moduleDir, string project, string sourceFileName, string content)
+    {
+        string srcDir = Path.Combine(moduleDir, "src", project);
+        string testDir = Path.Combine(moduleDir, "tests", project + ".Tests");
+        Directory.CreateDirectory(srcDir);
+        Directory.CreateDirectory(testDir);
+        File.WriteAllText(Path.Combine(srcDir, project + ".csproj"), MinimalProject());
+        File.WriteAllText(
+            Path.Combine(testDir, project + ".Tests.csproj"),
+            MinimalProject($@"..\..\src\{project}\{project}.csproj"));
+        string sourcePath = Path.Combine(srcDir, sourceFileName);
+        File.WriteAllText(sourcePath, content);
+        return sourcePath;
+    }
+
+    // Minimal SDK-style .csproj text with a <ProjectReference> per relative Include path.
+    private static string MinimalProject(params string[] referenceRelPaths)
+    {
+        string references = string.Concat(
+            referenceRelPaths.Select(rel => $"<ProjectReference Include=\"{rel}\" />"));
+        return $"<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup>{references}</ItemGroup></Project>";
+    }
+
+    // The one shared fake seam: records each command + workingDirectory and, when configured with report XML,
+    // writes it under <workingDirectory>/coverage/<guid>/coverage.cobertura.xml (the D-T12e reciprocal path
+    // CoverageReportLocator reads), then returns the configured exit code. No real process is ever launched.
     private sealed class FakeExecutor : ICommandExecutor
     {
         private readonly int _exitCode;

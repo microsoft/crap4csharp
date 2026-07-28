@@ -1,6 +1,6 @@
 # Feature: crap4csharp — faithful C# port of crap4java
 **Branch:** vibe/crap4csharp-port
-**Status:** **Core port COMPLETE (S1–S4 green) + T20 exit-code-parity hardening** — T1–T16 landed (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 `e4d1329`, B1 ratify `d0784b3`, T9 `400d49d`, T10 `87488ce`, T11 `debf9de`, T12 `9041c2c`, T14 `6e8456c`, T15 `1f7581e`, T16 `ff422bd`) plus **T20** (`(next commit)`); **115 tests green, 0/0 Release, CI green**. The full CRAP pipeline is shipped: parse → resolve-once module root (#7) → run coverage once → single-pick report (#8) → fail-fast gate (#1, exit 0/1/2) → analyze → format → threshold; `Program.Main` now catches **every** escaping exception → exit 1 (T20: full Java `main throws Exception` parity via a scoped `[Program.cs]` CA1031 relaxation; `CoverageException` retained). S6/T18 independent clean-room eval **executed (report-only, gpt-5.6-sol)** — verdict relayed to Mr. Das; T20 closes its lone new exit-code-consistency finding. **HELD for Mr. Das:** S5 (T17 resolution model + multi-report aggregation) and S7 (T19 dogfood). See the Slices/Tasks tables.
+**Status:** **Core port COMPLETE (S1–S4) + T20 exit-code parity + S5/T17 Model-B resolution** — T1–T16 landed (T6 `da02028`, T7 `1b90d24`, T8 `c023ef8`, T13 `e4d1329`, B1 ratify `d0784b3`, T9 `400d49d`, T10 `87488ce`, T11 `debf9de`, T12 `9041c2c`, T14 `6e8456c`, T15 `1f7581e`, T16 `ff422bd`), **T20** (`4e41c62`), **T17** (`(next commit)`); **139 tests green, 0/0 Release, CI green**. The full CRAP pipeline is shipped: parse → **resolve bounded owning `.csproj` + `.Tests`/`.UnitTests` test project once (#9)** → run coverage once on that test project (**unit-only `--filter`, #10**) → single report → fail-fast gate (#1, exit 0/1/2) → analyze → format → threshold; `Program.Main` catches **every** escaping exception → exit 1 (T20: full Java `main throws Exception` parity via a scoped `[Program.cs]` CA1031 relaxation; `CoverageException` retained). S6/T18 independent clean-room eval **executed (report-only, gpt-5.6-sol)** — verdict relayed to Mr. Das; T20 closed its lone exit-code-consistency finding. **S5/T17 = Model B** (bounded nearest-`.csproj` owning project + `<Project>.Tests`/`.UnitTests` transitive-ref test project + unit-only target filter): supersedes departure #6, retires #8, keeps #7, appends #9/#10. **HELD for Mr. Das:** S6 **re-run** on the Model-B port and S7 (T19 dogfood). See the Slices/Tasks tables.
 
 ## Requirements
 
@@ -35,7 +35,7 @@ the augmented complexity node set, and approved deliberate departures are in `do
 | S2 | Pure core (CRAP formula, report, CLI parse, domain types) with parity tests | S1 |
 | S3 | Ecosystem adapters (process exec, file finders, Roslyn parser, Cobertura parser) with parity tests | S1 |
 | S4 | Composition + CLI wiring + fail-fast + end-to-end | S2, S3 |
-| S5 | Module & test resolution finalization — **resolution model** (`.sln` vs nearest-`.csproj` vs hybrid) **plus test-project resolution plus multi-report coverage aggregation**: Anders presents options a/b/c; Mr. Das rules; then implement the chosen model — rework T13 `ModuleRootResolver` and shape T12/T14 as needed. Module *grouping* stays **out of S5** (closed by resolve-once departure #7), but multi-report coverage **aggregation** is now **in S5** (per single-pick departure #8) — union the per-test-project `coverage.cobertura.xml` reports so multi-test-project solutions stop under-reporting. | S4 |
+| S5 | Module & test resolution finalization — **RESOLVED: Mr. Das ruled Model B** (bounded nearest-`.csproj` owning project + `<Project>.Tests`/`.UnitTests` transitive-ref test project + unit-only target-test `--filter`). Retires `.sln`-first `ModuleRootResolver` → `OwningProjectResolver` + `TestProjectResolver`; resolve-once (#7); fail-fast exit 1 on no-owner / span-multiple-projects / no-test-project. One test project ⇒ one report, so multi-report **aggregation is RETIRED** (departure #8 closed) — not implemented. Appends departures #9/#10. | S4 |
 | S6 | Independent clean-room evaluation: a neutral evaluator on gpt-5.6-sol judges the delivered port against the VERBATIM original Requirements block (report-only) | S5 |
 | S7 | Real-world dogfooding: run the finished crap4csharp on three real C# repos — crap4csharp, mutate4csharp, dry4csharp — producing actual CRAP reports | S6 |
 
@@ -57,14 +57,14 @@ One or more tasks per slice. Full task detail and the fail-fast delta live in `d
 | T10 | S3 | `CoberturaCoverageParser` (+ empty-report case) + tests; pin FQN normalization vs a real coverlet sample | Done | `87488ce` |
 | T11 | S4 | `CrapAnalyzer` (exact→nearest-line lookup, per-method `TypeName`) + tests | Done | `debf9de` |
 | T12 | S4 | `CoverageRunner` (`dotnet test --collect`) + `CoverageReportLocator` + tests | Done | `9041c2c` |
-| T13 | S4 | `ModuleRootResolver` (nearest `.sln` → `.csproj` → root) + tests | Done | `e4d1329` |
+| T13 | S4 | `ModuleRootResolver` (nearest `.sln` → `.csproj` → root) + tests *(retired at T17/S5 → `OwningProjectResolver`, departure #9)* | Done | `e4d1329` |
 | T14 | S4 | `CliApplication` + tests; **fail-fast gate** (no-coverage/empty-report → exit 1) | Done | `6e8456c` |
 | T15 | S4 | `Program` entry (+ `CoverageException`) + integration tests (spawn built exe) | Done | `1f7581e` |
 | T16 | S4 | README usage section + end-to-end smoke (positive + negative fail-fast) | Done | `ff422bd` |
-| T17 | S5 | Module & test resolution finalization — **resolution model + test-project resolution + multi-report coverage aggregation**: Anders presents options — (a) keep the locked `.sln`-first model / (b) adopt mutate4csharp's nearest-`.csproj` owning project + `<Project>.Tests`/`<Project>.UnitTests` test-project resolution / (c) hybrid — per `../mutate4csharp` README §"Module & Test Resolution"; Mr. Das rules; then implement the chosen model — rework `ModuleRootResolver` (T13) and shape T12/T14. Module *grouping* is **no longer in scope** (removed by the resolve-once departure #7), but multi-report coverage **aggregation** IS now in scope (per single-pick departure #8) — replace T12's ordinal-first single-pick `CoverageReportLocator` with a union across the per-test-project `coverage.cobertura.xml` reports so multi-test-project solutions stop under-reporting. Keep running ALL module tests (crap4java parity); do NOT adopt unit-only `[Trait]` filtering. | Pending (deferred) | - |
+| T17 | S5 | **Module & test resolution — Model B (Mr. Das ruled).** Retire `.sln`-first `ModuleRootResolver` → **bounded nearest-`.csproj` `OwningProjectResolver`** (never climbs above the invocation root; fixes the S6 ancestor-climb) + new **`TestProjectResolver`** (`<Project>.Tests`/`.UnitTests` whose `ProjectReference`s transitively include the owner). Resolve-once (#7); **fail-fast exit 1** on no-owner / **span multiple projects** / no-test-project. Coverage runs once on that one test project with **unit-only `--filter "type!=IntegrationTests"`** (untagged included; departure #10). One test project ⇒ one report — multi-report **aggregation RETIRED** (departure #8 closed). Appends departures **#9/#10**, supersedes **#6**. Malformed-existing `.csproj` → zero refs (FLAG-1). | Done | `(next commit)` |
 | T18 | S6 | Independent evaluation on gpt-5.6-sol. Neutral sub-agent (NOT Anders/Dave/Bhaskar). Inputs = verbatim `## Requirements` block + read the delivered port + crap4java ONLY; must NOT read `docs/decisions.md`, rest of `docs/features`, `.github` playbook/agents, or any rationale. Report-only verdict to Mr. Das. | Pending (deferred) | - |
 | T19 | S7 | Dogfood crap4csharp on crap4csharp + `../mutate4csharp` + `../dry4csharp`; capture CRAP reports; summarize crappy methods to Mr. Das. | Pending (deferred) | - |
-| T20 | S4 | **Exit-code parity hardening** (closes the S6/T18 eval's exit-code-consistency finding): broaden `Program.Main` from `catch (CoverageException)` to a top-level `catch (Exception ex)` → full `ex` to stderr → exit 1 (Java `main throws Exception` parity — git/`--changed`, I/O, malformed-XML/parser throws now → 1, not a platform code); scoped `[Program.cs]` CA1031 `.editorconfig` relaxation (Mr. Das-approved; no `#pragma`/`[SuppressMessage]`; supersedes ruling A for `Program.cs` only); `CoverageException` retained; exit-matrix preserved (threshold still → **2**). +1 spawn test (`MainProcessExitsOneWhenGitFailsForChanged`). See the `docs/decisions.md` T20 register (D-T20a–d). | Done | `(next commit)` |
+| T20 | S4 | **Exit-code parity hardening** (closes the S6/T18 eval's exit-code-consistency finding): broaden `Program.Main` from `catch (CoverageException)` to a top-level `catch (Exception ex)` → full `ex` to stderr → exit 1 (Java `main throws Exception` parity — git/`--changed`, I/O, malformed-XML/parser throws now → 1, not a platform code); scoped `[Program.cs]` CA1031 `.editorconfig` relaxation (Mr. Das-approved; no `#pragma`/`[SuppressMessage]`; supersedes ruling A for `Program.cs` only); `CoverageException` retained; exit-matrix preserved (threshold still → **2**). +1 spawn test (`MainProcessExitsOneWhenGitFailsForChanged`). See the `docs/decisions.md` T20 register (D-T20a–d). | Done | `4e41c62` |
 
 Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 and T6/T7/T8/T13 parallelize early.
 
@@ -221,7 +221,10 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
 ### Carry-forward watch-items (from Anders's T13 review — must be honored at the noted task)
 
 - **W17 — T14 resolves the module root ONCE; multi-module grouping is a product call.** *(RESOLVED —
-  Mr. Das ruled RESOLVE-ONCE; recorded as departure #7 in `docs/decisions.md`.)* T14 (with T11/T12)
+  Mr. Das ruled RESOLVE-ONCE; recorded as departure #7 in `docs/decisions.md`. **T17/Model B lineage:**
+  the `ModuleRootResolver.Resolve` call below became `OwningProjectResolver.ResolveOwningProjects` +
+  `TestProjectResolver.ResolveTestProject` — departure #9; resolve-once #7 unchanged.)* T14 (with
+  T11/T12)
   resolves the module root by calling `ModuleRootResolver.Resolve` **once** at the discovered `.sln`
   and runs coverage **once**; it does **not** port Java's per-file
   `groupByModuleRoot`/`analyzeByModule` — there is **no module-group loop** in
@@ -327,7 +330,10 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   TRAITS** — closest to **(a)** (no tags added), but `build-test.md` is left untouched and the
   doc/reality reconciliation lives in `README.md`; **D-T8 is CLOSED**.
 
-- **D-T13 — Module-root walk unbounded (B1) — ratification.** *(RESOLVED — Mr. Das approved.)*
+- **D-T13 — Module-root walk unbounded (B1) — ratification.** *(RESOLVED — Mr. Das approved.
+  **SUPERSEDED at T17/S5:** departure #6 is superseded by departure #9 (Model B) — `ModuleRootResolver`
+  is retired/renamed to the **bounded** `OwningProjectResolver`; `.sln` is no longer a marker. Body
+  below retained for audit.)*
   `ModuleRootResolver` climbs **unbounded** to the filesystem root and falls back to the **start
   directory** when no `.sln`/`.csproj` marker is found, vs crap4java's workspace-bounded walk /
   `workspaceRoot` fallback. Recorded as **departure #6** in `docs/decisions.md`; T13 shipped as-is
@@ -347,7 +353,11 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
 
 ### S5/S6/S7 finale — design constraints (design-lane)
 
-- **D-S5 (design — deferred to when S5 runs; options-only now):** S5 finalizes the
+- **D-S5 (design — deferred to when S5 runs; options-only now — RESOLVED at T17):** *(Mr. Das ruled
+  **option (b) — Model B**: bounded nearest-`.csproj` owning project + `<Project>.Tests`/`.UnitTests`
+  transitive-ref test project + unit-only target-test filter — shipped as departures **#9/#10**; see
+  `docs/decisions.md`. Options text below retained for audit; `ModuleRootResolver` →
+  `OwningProjectResolver` + `TestProjectResolver`.)* S5 finalizes the
   file→module→test **resolution model** (`.sln` vs nearest-`.csproj` vs hybrid) **plus test-project
   resolution plus multi-report coverage aggregation** before the port is "done-done" and before the
   real-world slices

@@ -2,11 +2,13 @@ namespace Microsoft.Crap4CSharp;
 
 using System.Globalization;
 
-// Faithful port of crap4java's CliApplication, adapted per docs/decisions.md departures #1 (fail-fast)
-// and #7 (resolve-once). Orchestrates: parse args -> pick files -> resolve module root ONCE ->
-// run coverage ONCE -> locate ONCE -> fail-fast gate -> parse -> analyze -> format -> print -> threshold.
-// Composes shipped types only; contains no resolution/coverage/parse internals of its own (the S5/T17
-// model swap must touch only ModuleRootResolver -- the D-T12b seam).
+// Faithful port of crap4java's CliApplication, adapted per docs/decisions.md departures #1 (fail-fast),
+// #7 (resolve-once), and #9/#10 (Model B resolution + unit-only target-test filter). Orchestrates: parse
+// args -> pick files -> resolve the ONE owning project (bounded) -> fail-fast on absence/span -> resolve the
+// test project -> fail-fast on absence -> run coverage ONCE -> locate ONCE -> fail-fast gate -> parse ->
+// analyze -> format -> print -> threshold. Composes shipped types only (OwningProjectResolver,
+// TestProjectResolver, CoverageRunner, CoverageReportLocator, CoberturaCoverageParser, CrapAnalyzer,
+// ReportFormatter); contains no resolution/coverage/parse internals of its own.
 public sealed class CliApplication
 {
     // Adapts crap4java's Main.usage() to the C# ecosystem: "Java" -> "C#", ".java" -> ".cs", and the
@@ -41,9 +43,9 @@ public sealed class CliApplication
     }
 
     // Ports execute(String[]). Owns every exit code (§4): 0 (help / no files / max CRAP <= 8.0),
-    // 1 (parse error / no report / empty report), 2 (threshold exceeded). The coverage-runner throw and
-    // any parser throw PROPAGATE (faithful to Java's `throws Exception`); T15's Program.Main converts them
-    // to exit 1.
+    // 1 (parse error / no owning project / files span multiple projects / no test project / no report /
+    // empty report), 2 (threshold exceeded). The coverage-runner throw and any parser throw PROPAGATE
+    // (faithful to Java's `throws Exception`); T15's Program.Main converts them to exit 1.
     public int Execute(string[] args)
     {
         ParseOutcome parse = ParseArguments(args);
@@ -60,15 +62,38 @@ public sealed class CliApplication
             return 0;
         }
 
-        // Resolve the module root ONCE and run coverage ONCE at it (departure #7: no module-group loop).
-        string moduleRoot = ModuleRootResolver.Resolve(_projectRoot);
-        _coverageRunner.GenerateCoverage(moduleRoot);
+        // Resolve the ONE owning project for the analyzed files (departure #7 resolve-once; #9 Model B),
+        // bounded so the walk never climbs above the invocation root _projectRoot.
+        IReadOnlyList<string> owningProjects =
+            OwningProjectResolver.ResolveOwningProjects(filesToAnalyze, _projectRoot);
+        if (owningProjects.Count == 0)
+        {
+            _error.WriteLine($"No owning .csproj was found at or above the analyzed C# files (searched up to the invocation root '{_projectRoot}'). Ensure the target sources live inside a C# project.");
+            return 1;
+        }
+
+        if (owningProjects.Count > 1)
+        {
+            _error.WriteLine($"Analyzed C# files span multiple projects ({string.Join(", ", owningProjects)}); crap4csharp resolves a single owning project per run.");
+            return 1;
+        }
+
+        string owningProject = owningProjects[0];
+        string? testProject = TestProjectResolver.ResolveTestProject(owningProject, _projectRoot);
+        if (testProject is null)
+        {
+            string project = Path.GetFileNameWithoutExtension(owningProject);
+            _error.WriteLine($"No test project was found for '{owningProject}' (expected {project}.Tests.csproj or {project}.UnitTests.csproj transitively referencing it, under '{_projectRoot}').");
+            return 1;
+        }
+
+        _coverageRunner.GenerateCoverage(testProject, _projectRoot);
 
         // FAIL-FAST TRIGGER 1 (departure #1): no report produced at all.
-        string? report = CoverageReportLocator.Locate(moduleRoot);
+        string? report = CoverageReportLocator.Locate(_projectRoot);
         if (report is null)
         {
-            _error.WriteLine($"No coverage report was produced under '{moduleRoot}'. Ensure a test project references coverlet.collector so 'dotnet test --collect' emits coverage.cobertura.xml.");
+            _error.WriteLine($"No coverage report was produced under '{_projectRoot}'. Ensure the test project references coverlet.collector so 'dotnet test --collect' emits coverage.cobertura.xml.");
             return 1;
         }
 
