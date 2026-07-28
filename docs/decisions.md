@@ -512,6 +512,59 @@ the invariants.
   D-T12e `ResultsDirectoryName` reciprocal contract and coverage-base = `_projectRoot` are preserved. The
   decoupling INTENT survives (coverage/locate take a pre-resolved root and never resolve on their own).
 
+## T21 register — Async/iterator coverage attribution; S8 close-out (Anders T21 review, 🟢)
+
+Resolved decisions and invariants for the S8 hardening slice (executed after S7 dogfood, which
+empirically confirmed the blind spot on `../mutate4csharp`: three tested state-machine methods —
+`CoberturaLineCoverageParser.ResolveAbsolutePaths` (iterator), `ProcessRunnerSupport.DrainAsync` and
+`TimedProcessRun.DrainAsync` (async) — all reported `N/A` and escaped the exit-2 gate). Adds departure
+**#11**; touches no other departure. See departure #11 for the behavioral contract; this register records
+the design rulings.
+
+- **D-T21a — attribute the `MoveNext` method ONLY, not the whole state-machine class (Anders design
+  call; in-lane).** Coverlet records the user's async/iterator body's real executable lines on the state
+  machine's `MoveNext`; the sibling synthetic members (`.ctor`, `SetStateMachine`, `IDisposable.Dispose`,
+  `get_Current`, `Reset`, `GetEnumerator`) either carry no `<line>` or carry synthetic non-user lines
+  that would pollute the covered/missed counts. Aggregating all methods in the class was REJECTED
+  (pollution + double-count risk); reading only `MoveNext` is the faithful signal for R3. Minor accepted
+  under-count: an iterator's `try/finally`/`using` teardown that coverlet places on `Dispose` is not
+  folded in — negligible and consistent with "score the body."
+
+- **D-T21b — class-level detection routes state machines AWAY from `IsCompilerGeneratedMethod` (surgical
+  predicate flow; provably preserves R2/R3/R4 + lambda skip).** `Parse` classifies each `<class>` first:
+  a nested last segment `<Method>d__N` (non-empty `Method`, `>` immediately followed by `d__`+digits) is
+  handled by a new state-machine branch (read `MoveNext` -> attribute); EVERY other class still flows into
+  the UNCHANGED `ReadClassMethods` -> `IsCompilerGeneratedMethod`, so Rule 1 still wholesale-skips the
+  remaining angle-bracket classes (lambda display `<>c` / `<>c__DisplayClassN`), and Rules 2/3/4 (`b__`/
+  `g__` display methods, accessors, ctors) are untouched. The empty-bracket check is what keeps lambda
+  display classes skipped (finding #3 deferred). `IsCompilerGeneratedMethod`'s Rule-1 comment is updated
+  to note state machines are now diverted upstream.
+
+- **D-T21c — disambiguation via the existing exact->nearest lookup (no CrapAnalyzer change).** The source
+  method's `StartLine` (declaration line, `m.GetLocation()`) never equals the MoveNext body min-line, so
+  the attributed key resolves via `NearestCoverage`'s ordinal prefix scan — the SAME mechanism that
+  already resolves regular overloads (W-T11a). Overloaded async/iterator methods emit multiple
+  `EnclosingType#M:line` keys (distinct MoveNext min-lines) and pick the nearest to each declaration.
+  Nested/generic enclosing types keep backtick arity via `NormalizeTypeName` (D-T10b). Residual: the
+  pre-existing overloaded-by-adjacent-line ambiguity is unchanged (NOT worsened), and explicit-interface
+  async/iterator methods (coverlet may mangle `<IFace.M>d__N`) may still miss -> `N/A` as today (no
+  regression) — neither needs a Mr. Das decision.
+
+- **D-T21d — two existing wholesale-skip tests RESHAPED; async + iterator attribution tests ADDED.**
+  `SkipsSyntheticStateMachineClassButKeepsRealMoveNext` and `MatchesRealCoverletSampleClassNames` pinned
+  the OLD "state machine skipped wholesale" behavior; both are reshaped to assert the state machine's
+  MoveNext coverage is now attributed to the source-method key while synthetic siblings, accessors,
+  ctors and lambda `b__`/display classes stay skipped. New parser + `CrapAnalyzer` tests pin a REAL
+  coverlet `<M>d__N` sample (mirroring `DrainAsync`/`ResolveAbsolutePaths`): the source method reports
+  REAL coverage (not `N/A`) and the correct CRAP (async CC 2 @ 70% -> 2.108; iterator CC 3 @ 70% ->
+  3.243). A `<>c__DisplayClassN` regression guard asserts lambdas stay skipped.
+
+- **D-T21e — finding #3 (lambdas/local functions) explicitly DEFERRED.** Lambda bodies (`<M>b__N`, hosted
+  on `<>c`/`<>c__DisplayClassN`) and local functions (`<M>g__...|N`) still resolve to skipped coverage; a
+  captured lambda whose lines coverlet inlines onto the outer method are already counted, but a
+  display-class-hosted lambda's own coverage is not attributed. Out of scope for S8 (Mr. Das ruled
+  surgical: `d__N` only). Flagged for a future slice if Mr. Das schedules it.
+
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
 1. **Fail fast** — when a module produces no coverage / runs no tests, exit non-zero (`1`) with a
@@ -642,6 +695,27 @@ the invariants.
     fail-fasts fire (`No coverage report was produced` / `contained no coverage data`, exit 1) — **no
     new exit code**. (Ruled by Mr. Das: reverses the earlier "all tests / no `--filter`" stance; carry
     ONLY the `type!=IntegrationTests` clause.)
+
+11. **Async/iterator coverage attribution (C#-specific)** — coverlet records a source async/iterator
+    method's executable lines under its compiler-generated state-machine nested type
+    `Outer/<Method>d__N` (on that type's `MoveNext`), NOT on the source method's own lines. crap4csharp
+    now DETECTS a state-machine class — a nested last segment `<Method>d__N` with a **non-empty**
+    `Method` (both `async` and `yield` iterators use the `d__` shape; the empty-bracket `<>c` /
+    `<>c__DisplayClassN` lambda display classes are deliberately NOT matched) — demangles it to the
+    enclosing type + `Method`, and **attributes the state machine's `MoveNext` line coverage** (MoveNext
+    only; the synthetic `.ctor`/`SetStateMachine`/`Dispose` siblings carry no user source and are
+    ignored) to the key `NormalizeTypeName(enclosingType) + "#" + Method + ":" + minMoveNextLine`.
+    `CrapAnalyzer`'s existing exact->nearest-line lookup then resolves the source method (declared a few
+    lines above its body) to this key with **no analyzer change**; overloaded async/iterator methods
+    (multiple `<M>d__N`) disambiguate by nearest MoveNext min-line, exactly as regular overloads do.
+    **Observable behavior:** async and iterator methods that ARE tested now report their REAL coverage
+    and CRAP instead of `N/A`, so they participate in the exit-2 threshold gate (previously they always
+    escaped it). Analog of departure #2 (a C#-ecosystem enrichment of the metric's inputs, faithful to
+    crap4java's *intent* of scoring the human-authored method). Implements requirement-intent R3.
+    **Scope is surgical:** ONLY `d__N` state machines (async + iterators). Lambdas (`<M>b__N`) and local
+    functions (`<M>g__...|N`) remain compiler-generated-skipped — their coverage-consistency question is
+    a known related gap, DEFERRED (finding #3). (Ruled by Mr. Das: FIX; attribute `<M>d__N` -> source
+    async/iterator method; do NOT fold in lambdas/local functions.)
 
 ## Cyclomatic complexity — authoritative node set
 

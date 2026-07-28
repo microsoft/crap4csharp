@@ -1,6 +1,7 @@
 namespace Microsoft.Crap4CSharp;
 
 using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -21,7 +22,7 @@ using System.Xml.Linq;
 //     CrapAnalyzer.lookupCoverage) resolves it into the method's own StartLine range.
 // Java's non-instantiable `final class` with a private ctor maps to the idiomatic C# `static class`
 // (public because the `internal` modifier is banned in the single-assembly design -- ratified C1).
-public static class CoberturaCoverageParser
+public static partial class CoberturaCoverageParser
 {
     private static readonly char[] AngleBrackets = ['<', '>'];
 
@@ -54,8 +55,20 @@ public static class CoberturaCoverageParser
             foreach (XElement classElement in document.Descendants("class"))
             {
                 string rawClassName = classElement.Attribute("name")?.Value ?? string.Empty;
-                string typeName = NormalizeTypeName(rawClassName);
-                ReadClassMethods(classElement, rawClassName, typeName, coverage);
+
+                // R3 (T21): async/iterator state-machine classes (Enclosing/<Method>d__N) are intercepted
+                // HERE, at class level, and their user-body coverage is re-attributed to the source method
+                // that the compiler lowered. Diverting them upstream keeps IsCompilerGeneratedMethod's
+                // rule 1 unchanged -- a state machine never reaches it. Everything else (real classes and
+                // the lambda display classes that fail the d__ match) flows through ReadClassMethods.
+                if (TryParseStateMachine(rawClassName, out string enclosingRaw, out string sourceMethod))
+                {
+                    ReadStateMachineMoveNext(classElement, NormalizeTypeName(enclosingRaw), sourceMethod, coverage);
+                }
+                else
+                {
+                    ReadClassMethods(classElement, rawClassName, NormalizeTypeName(rawClassName), coverage);
+                }
             }
 
             return coverage;
@@ -86,9 +99,11 @@ public static class CoberturaCoverageParser
         ArgumentNullException.ThrowIfNull(rawClassName);
         ArgumentNullException.ThrowIfNull(methodName);
 
-        // Rule 1: a synthetic containing class (async/iterator state machines Outer+<M>d__N, lambda
-        // display classes Outer+<>c / Outer+<>c__DisplayClassN) -- skips all of its methods, including a
-        // synthetic MoveNext (W-T10c: a user-authored MoveNext lives on a real class and is kept).
+        // Rule 1: a synthetic containing class. Post-T21 the async/iterator state machines
+        // (Enclosing/<Method>d__N) are diverted upstream in Parse and never reach this predicate, so
+        // rule 1 now only nukes the remaining angle-bracket classes -- the lambda display classes
+        // (Outer+<>c / Outer+<>c__DisplayClassN), which fail the state-machine match (empty name) and
+        // fall through to ReadClassMethods (finding #3: still skipped wholesale).
         if (rawClassName.IndexOfAny(AngleBrackets) >= 0)
         {
             return true;
@@ -154,6 +169,79 @@ public static class CoberturaCoverageParser
             string key = typeName + "#" + methodName + ":" + minChildLine.ToString(CultureInfo.InvariantCulture);
             coverage[key] = new CoverageData(missedLines, coveredLines);
         }
+    }
+
+    // R3 (T21) state-machine matcher. Anchored on the class's LAST nested segment: `<Method>d__N`, where
+    // the `.+` capture guarantees a NON-EMPTY source-method name between the angle brackets. This is what
+    // EXCLUDES the lambda display classes `<>c` / `<>c__DisplayClassN` (empty name -> no match), so those
+    // still fall through to ReadClassMethods and are skipped by IsCompilerGeneratedMethod's rule 1.
+    [GeneratedRegex(@"^<(.+)>d__\d+$")]
+    private static partial Regex StateMachineNameRegex();
+
+    // R3 (T21) demangler. Splits a Cobertura class @name into its enclosing type and the source-method
+    // name a state machine was lowered from, when -- and only when -- the class's LAST nested segment is
+    // `<Method>d__N`. Takes the raw (un-normalized) name so the '/' or '+' nesting separators and the
+    // angle-bracket markers are still visible. Returns false (with both out params emptied) for any class
+    // that is not a state machine, including top-level classes (no separator) and lambda display classes
+    // (<>c / <>c__DisplayClassN -- empty name between the brackets fails the regex's non-empty capture).
+    private static bool TryParseStateMachine(string rawClassName, out string enclosingRaw, out string sourceMethod)
+    {
+        enclosingRaw = string.Empty;
+        sourceMethod = string.Empty;
+
+        int sep = Math.Max(rawClassName.LastIndexOf('/'), rawClassName.LastIndexOf('+'));
+        if (sep < 0)
+        {
+            return false;
+        }
+
+        string lastSegment = rawClassName[(sep + 1)..];
+        Match match = StateMachineNameRegex().Match(lastSegment);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        enclosingRaw = rawClassName[..sep];
+        sourceMethod = match.Groups[1].Value;
+        return true;
+    }
+
+    // R3 (T21) attribution. A state machine's user-authored body is compiler-lowered onto MoveNext, so
+    // MoveNext's <line> hits ARE the source method's real coverage. Emit a single entry keyed on the
+    // ENCLOSING type + the demangled source-method name, counted IDENTICALLY to ReadClassMethods (covered
+    // = hits > 0, missed = hits == 0, key line = MIN @number). D-T21a: attribute MoveNext ONLY, never
+    // aggregate the class -- the sibling synthetics (.ctor / SetStateMachine / IDisposable.Dispose /
+    // get_Current / Reset / GetEnumerator) carry only synthetic noise. If MoveNext is absent, or present
+    // but line-less, emit NOTHING (the faithful analog of ReadClassMethods' "no lines -> skip"; the
+    // method stays N/A and T11's nearest-line lookup resolves it from the source method's StartLine).
+    private static void ReadStateMachineMoveNext(
+        XElement classElement,
+        string normalizedEnclosing,
+        string sourceMethod,
+        Dictionary<string, CoverageData> coverage)
+    {
+        XElement? moveNext = classElement.Element("methods")?
+            .Elements("method")
+            .FirstOrDefault(method =>
+                string.Equals(method.Attribute("name")?.Value, "MoveNext", StringComparison.Ordinal));
+        if (moveNext is null)
+        {
+            return;
+        }
+
+        List<XElement> lines = moveNext.Element("lines")?.Elements("line").ToList() ?? [];
+        if (lines.Count == 0)
+        {
+            return;
+        }
+
+        int coveredLines = lines.Count(line => ParseIntOrZero(line.Attribute("hits")?.Value) > 0);
+        int missedLines = lines.Count(line => ParseIntOrZero(line.Attribute("hits")?.Value) == 0);
+        int minChildLine = lines.Min(line => ParseIntOrZero(line.Attribute("number")?.Value));
+
+        string key = normalizedEnclosing + "#" + sourceMethod + ":" + minChildLine.ToString(CultureInfo.InvariantCulture);
+        coverage[key] = new CoverageData(missedLines, coveredLines);
     }
 
     // Ports parseInt(String)->0-on-failure, applied to both @hits and @number; InvariantCulture keeps it

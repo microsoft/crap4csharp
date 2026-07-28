@@ -138,4 +138,10 @@ dotnet run --project src/Crap4CSharp -c Release -- project-a project-b
   `coverage.cobertura.xml` — no multi-report ambiguity. If the analyzed files span more than one owning
   project, crap4csharp **fails fast** (exit 1) rather than silently under-reporting; narrow the run to a
   single project.
+- **Async & iterator coverage (no longer a blind spot):** coverlet records an `async`/iterator method's
+  executable lines on its compiler-generated state machine (`<Method>d__N`), not on the method itself.
+  crap4csharp attributes that state machine's `MoveNext` coverage back to the source method, so a
+  **tested** async/iterator method reports its real coverage and CRAP (and can trip the exit-2 gate)
+  instead of `N/A`. **Known gap:** lambda bodies and local functions hosted on compiler-generated
+  display classes are not yet attributed.
 - Report output is sorted by CRAP descending, with `N/A` at the bottom.

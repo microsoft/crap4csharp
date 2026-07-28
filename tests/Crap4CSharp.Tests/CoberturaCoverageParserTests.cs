@@ -250,11 +250,12 @@ public class CoberturaCoverageParserTests
     }
 
     [Fact]
-    public void SkipsSyntheticStateMachineClassButKeepsRealMoveNext()
+    public void AttributesStateMachineMoveNextToSourceMethodAndKeepsRealMoveNext()
     {
-        // The synthetic state-machine class Demo.C+<DoAsync>d__0 is skipped wholesale via rule 1 (its
-        // angle brackets), taking its MoveNext/SetStateMachine with it; a user-authored MoveNext on the
-        // real class Demo.Enumerator is kept (W-T10c: no blanket MoveNext name-skip).
+        // The synthetic state-machine class Demo.C+<DoAsync>d__0 is intercepted at class level (R3/T21):
+        // its MoveNext body-coverage is RE-ATTRIBUTED to the source method DoAsync, while the synthetic
+        // SetStateMachine sibling is dropped (D-T21a: MoveNext only). A user-authored MoveNext on the real
+        // class Demo.Enumerator is still kept verbatim (W-T10c: no blanket MoveNext name-skip).
         string xml = """
             <?xml version="1.0"?>
             <coverage>
@@ -288,11 +289,12 @@ public class CoberturaCoverageParserTests
         {
             IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
 
+            result.Should().ContainKey("Demo.C#DoAsync:12").WhoseValue.Should().Be(new CoverageData(0, 1));
             result.Should().ContainKey("Demo.Enumerator#MoveNext:20");
+            result.Should().HaveCount(2);
             result.Keys.Should().NotContain(k =>
-                k.Contains("d__0", StringComparison.Ordinal)
-                || k.Contains("DoAsync", StringComparison.Ordinal)
-                || k.Contains("SetStateMachine", StringComparison.Ordinal));
+                k.Contains("SetStateMachine", StringComparison.Ordinal)
+                || k.Contains("d__0", StringComparison.Ordinal));
         });
     }
 
@@ -307,7 +309,8 @@ public class CoberturaCoverageParserTests
         //   * Sample.Container`1            -- get_Item accessor skipped, Count kept
         //   * Sample.Worker                -- get_Prop accessor skipped, UseLambda (captured lambda
         //                                     inlined) kept as 10 covered lines
-        //   * Sample.Worker/<DoAsync>d__4  -- async state machine, whole class skipped (rule 1)
+        //   * Sample.Worker/<DoAsync>d__4  -- async state machine; its MoveNext body-coverage is
+        //                                     RE-ATTRIBUTED to the source method DoAsync (R3/T21).
         // This pins the frozen reciprocal AND the skip predicate against genuine coverlet output (R3).
         string xml = """
             <?xml version="1.0" encoding="utf-8"?>
@@ -421,6 +424,10 @@ public class CoberturaCoverageParserTests
             result.Should().ContainKey("Sample.Worker#UseLambda:39")
                 .WhoseValue.Should().Be(new CoverageData(0, 10));
 
+            // R3/T21: the async state machine's MoveNext (lines 33-36, all hit) is attributed to DoAsync.
+            result.Should().ContainKey("Sample.Worker#DoAsync:33")
+                .WhoseValue.Should().Be(new CoverageData(0, 4));
+
             // The synthetic state-machine class, the accessors and the constructor are all absent.
             result.Keys.Should().NotContain(k =>
                 k.Contains('<')
@@ -429,6 +436,132 @@ public class CoberturaCoverageParserTests
                 || k.Contains("MoveNext", StringComparison.Ordinal)
                 || k.Contains("get_", StringComparison.Ordinal)
                 || k.Contains(".ctor", StringComparison.Ordinal));
+        });
+    }
+
+    [Fact]
+    public void AttributesAsyncStateMachineCoverageToSourceMethod()
+    {
+        // An async state machine Sample.Runner/<DrainAsync>d__5: MoveNext carries the lowered user body
+        // (lines 12-21), 7 hit + 3 unhit -> attributed to DrainAsync at min-line 12 as 70% coverage.
+        string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Sample.Runner/&lt;DrainAsync&gt;d__5" filename="Runner.cs">
+                      <methods>
+                        <method name="MoveNext" signature="()">
+                          <lines>
+                            <line number="12" hits="1" />
+                            <line number="13" hits="1" />
+                            <line number="14" hits="1" />
+                            <line number="15" hits="1" />
+                            <line number="16" hits="1" />
+                            <line number="17" hits="1" />
+                            <line number="18" hits="1" />
+                            <line number="19" hits="0" />
+                            <line number="20" hits="0" />
+                            <line number="21" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(xml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().ContainKey("Sample.Runner#DrainAsync:12")
+                .WhoseValue.Should().Be(new CoverageData(3, 7));
+        });
+    }
+
+    [Fact]
+    public void AttributesIteratorStateMachineCoverageToSourceMethod()
+    {
+        // An iterator state machine Sample.Paths/<ResolveAbsolutePaths>d__5: MoveNext carries the lowered
+        // user body (lines 40-49), 7 hit + 3 unhit -> attributed to ResolveAbsolutePaths at min-line 40.
+        string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Sample.Paths/&lt;ResolveAbsolutePaths&gt;d__5" filename="Paths.cs">
+                      <methods>
+                        <method name="MoveNext" signature="()">
+                          <lines>
+                            <line number="40" hits="1" />
+                            <line number="41" hits="1" />
+                            <line number="42" hits="1" />
+                            <line number="43" hits="1" />
+                            <line number="44" hits="1" />
+                            <line number="45" hits="1" />
+                            <line number="46" hits="1" />
+                            <line number="47" hits="0" />
+                            <line number="48" hits="0" />
+                            <line number="49" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(xml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().ContainKey("Sample.Paths#ResolveAbsolutePaths:40")
+                .WhoseValue.Should().Be(new CoverageData(3, 7));
+        });
+    }
+
+    [Fact]
+    public void KeepsLambdaDisplayClassSkipped()
+    {
+        // Regression guard (finding #3 stays deferred): a lambda display class Sample.Worker/<>c__Display-
+        // Class3_0 fails the state-machine match (empty name between the brackets), falls through to
+        // ReadClassMethods, and is skipped wholesale by rule 1. No attribution key must leak.
+        string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Sample.Worker/&lt;&gt;c__DisplayClass3_0" filename="Worker.cs">
+                      <methods>
+                        <method name="&lt;UseLambda&gt;b__0_0" signature="(System.Int32)">
+                          <lines>
+                            <line number="41" hits="4" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(xml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().BeEmpty();
+            result.Keys.Should().NotContain(k =>
+                k.Contains("DisplayClass", StringComparison.Ordinal)
+                || k.Contains("b__", StringComparison.Ordinal));
         });
     }
 

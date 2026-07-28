@@ -57,6 +57,129 @@ public class CrapAnalyzerTests
         </coverage>
         """;
 
+    // Async source method DrainAsync (declared line 5) with Roslyn CC = 2 (base 1 + one `while`). Its
+    // lowered state machine emits coverage on demo.Runner/<DrainAsync>d__0's MoveNext (T21 attribution).
+    private const string AsyncRunnerSource = """
+        using System.Threading.Tasks;
+        namespace demo;
+        class Runner
+        {
+            async Task DrainAsync(int n)
+            {
+                int i = 0;
+                while (i < n)
+                {
+                    i++;
+                }
+            }
+        }
+        """;
+
+    // Iterator source method ResolveAbsolutePaths (declared line 5) with Roslyn CC = 3 (base 1 + one
+    // `foreach` + one `if`; `yield` adds nothing). Its lowered state machine emits coverage on
+    // demo.Paths/<ResolveAbsolutePaths>d__0's MoveNext (T21 attribution).
+    private const string IteratorPathsSource = """
+        using System.Collections.Generic;
+        namespace demo;
+        class Paths
+        {
+            IEnumerable<int> ResolveAbsolutePaths(int[] xs)
+            {
+                foreach (var x in xs)
+                {
+                    if (x > 0)
+                    {
+                        yield return x;
+                    }
+                }
+            }
+        }
+        """;
+
+    // Both state machines in one Cobertura file. Each MoveNext carries 10 lowered body lines near the
+    // source method's declaration (7 hit + 3 unhit -> 70%), keyed on the ENCLOSING type + demangled
+    // source-method name (demo.Runner#DrainAsync:7, demo.Paths#ResolveAbsolutePaths:7) by T21.
+    private const string AsyncIteratorXml = """
+        <?xml version="1.0"?>
+        <coverage>
+          <packages>
+            <package name="demo">
+              <classes>
+                <class name="demo.Runner/&lt;DrainAsync&gt;d__0" filename="Runner.cs">
+                  <methods>
+                    <method name="MoveNext" signature="()">
+                      <lines>
+                        <line number="7" hits="1" />
+                        <line number="8" hits="1" />
+                        <line number="9" hits="1" />
+                        <line number="10" hits="1" />
+                        <line number="11" hits="1" />
+                        <line number="12" hits="1" />
+                        <line number="13" hits="1" />
+                        <line number="14" hits="0" />
+                        <line number="15" hits="0" />
+                        <line number="16" hits="0" />
+                      </lines>
+                    </method>
+                  </methods>
+                </class>
+                <class name="demo.Paths/&lt;ResolveAbsolutePaths&gt;d__0" filename="Paths.cs">
+                  <methods>
+                    <method name="MoveNext" signature="()">
+                      <lines>
+                        <line number="7" hits="1" />
+                        <line number="8" hits="1" />
+                        <line number="9" hits="1" />
+                        <line number="10" hits="1" />
+                        <line number="11" hits="1" />
+                        <line number="12" hits="1" />
+                        <line number="13" hits="1" />
+                        <line number="14" hits="0" />
+                        <line number="15" hits="0" />
+                        <line number="16" hits="0" />
+                      </lines>
+                    </method>
+                  </methods>
+                </class>
+              </classes>
+            </package>
+          </packages>
+        </coverage>
+        """;
+
+    // T21 end-to-end: an async and an iterator source method now receive REAL coverage (not N/A) via the
+    // state-machine MoveNext attribution. Async CC = 2 @ 70% -> CRAP 2^2*0.3^3+2 = 2.108; iterator CC = 3
+    // @ 70% -> CRAP 3^2*0.3^3+3 = 3.243. The MoveNext key resolves via T11's nearest-line lookup from each
+    // method's StartLine (single key per source method -> resolves at any distance).
+    [Fact]
+    public void ReportsRealCrapForAsyncAndIteratorMethods()
+    {
+        WithTempDir(dir =>
+        {
+            string asyncSource = WriteFile(dir, "Runner.cs", AsyncRunnerSource);
+            string iteratorSource = WriteFile(dir, "Paths.cs", IteratorPathsSource);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", AsyncIteratorXml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([asyncSource, iteratorSource], cobertura);
+
+            MethodMetrics asyncMetric = result.Single(m => m.MethodName == "DrainAsync");
+            asyncMetric.ClassName.Should().Be("demo.Runner");
+            asyncMetric.Complexity.Should().Be(2);
+            asyncMetric.CoveragePercent.Should().NotBeNull();
+            asyncMetric.CoveragePercent!.Value.Should().BeApproximately(70.0, 1e-9);
+            asyncMetric.CrapScore.Should().NotBeNull();
+            asyncMetric.CrapScore!.Value.Should().BeApproximately(2.108, 1e-9);
+
+            MethodMetrics iteratorMetric = result.Single(m => m.MethodName == "ResolveAbsolutePaths");
+            iteratorMetric.ClassName.Should().Be("demo.Paths");
+            iteratorMetric.Complexity.Should().Be(3);
+            iteratorMetric.CoveragePercent.Should().NotBeNull();
+            iteratorMetric.CoveragePercent!.Value.Should().BeApproximately(70.0, 1e-9);
+            iteratorMetric.CrapScore.Should().NotBeNull();
+            iteratorMetric.CrapScore!.Value.Should().BeApproximately(3.243, 1e-9);
+        });
+    }
+
     // P1 <- computesScoresForChangedFiles.
     [Fact]
     public void ComputesScoresForChangedFiles()
