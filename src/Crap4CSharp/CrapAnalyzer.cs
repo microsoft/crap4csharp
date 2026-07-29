@@ -16,8 +16,10 @@ using System.Globalization;
 // The lookup helpers are public only because CrapAnalyzerTest calls them directly and the `internal`
 // modifier is banned (ratified C1); ExactCoverage stays private (no test calls it directly). Lookup
 // keys are built byte-for-byte from the frozen reciprocal TypeName form emitted by both
-// CSharpMethodParser.TypeNameOf and CoberturaCoverageParser.NormalizeTypeName -- any drift silently
-// collapses a method's coverage to N/A, and the trailing ':' is load-bearing.
+// CSharpMethodParser.TypeNameOf and CoberturaCoverageParser.NormalizeTypeName, plus a source-file
+// basename segment (T24 / departure #12): TypeName#method#Path.GetFileName(file):line -- any drift
+// silently collapses a method's coverage to N/A, and the trailing ':line' is load-bearing (kept LAST so
+// ParseTrailingLine's last-':' split and the nearest-line scan are unchanged).
 public static class CrapAnalyzer
 {
     // Ports analyze: for each existing changed file, parse its methods, resolve each method's coverage
@@ -43,12 +45,20 @@ public static class CrapAnalyzer
             }
 
             string source = File.ReadAllText(file);
+
+            // T24 (departure #12): the basename dimension of the coverage key. Computed once per file
+            // (every method parsed from this source shares it) and threaded into the lookup so per-file
+            // partial-class overloads resolve to their OWN file's coverage. File.Exists gated above, so
+            // this is always a real filename (never "").
+            string sourceFile = Path.GetFileName(file);
+
             foreach (MethodDescriptor method in CSharpMethodParser.Parse(source))
             {
                 double? coverage = LookupCoverage(
                     coverageMap,
                     typeName: method.TypeName,
                     methodName: method.Name,
+                    sourceFile: sourceFile,
                     line: method.StartLine);
                 double? crap = CrapScore.Calculate(method.Complexity, coverage);
                 metrics.Add(new MethodMetrics(
@@ -74,32 +84,34 @@ public static class CrapAnalyzer
         IReadOnlyDictionary<string, CoverageData> coverageMap,
         string typeName,
         string methodName,
+        string sourceFile,
         int line)
     {
         ArgumentNullException.ThrowIfNull(coverageMap);
 
-        double? exact = ExactCoverage(coverageMap, typeName, methodName, line);
+        double? exact = ExactCoverage(coverageMap, typeName, methodName, sourceFile, line);
         if (exact is not null)
         {
             return exact;
         }
 
-        CoverageData? nearest = NearestCoverage(coverageMap, typeName, methodName, line);
+        CoverageData? nearest = NearestCoverage(coverageMap, typeName, methodName, sourceFile, line);
         return nearest?.CoveragePercent;
     }
 
-    // Ports nearestCoverage: scan only entries under "typeName#methodName:" (ordinal prefix) and keep
-    // the one whose trailing line is closest. The strict '<' means the first entry in enumeration
-    // (document) order wins a distance tie -- the LinkedHashMap analog (W-T11a).
+    // Ports nearestCoverage: scan only entries under "typeName#methodName#sourceFile:" (ordinal prefix)
+    // and keep the one whose trailing line is closest. The strict '<' means the first entry in
+    // enumeration (document) order wins a distance tie -- the LinkedHashMap analog (W-T11a).
     public static CoverageData? NearestCoverage(
         IReadOnlyDictionary<string, CoverageData> coverageMap,
         string typeName,
         string methodName,
+        string sourceFile,
         int line)
     {
         ArgumentNullException.ThrowIfNull(coverageMap);
 
-        string prefix = typeName + "#" + methodName + ":";
+        string prefix = typeName + "#" + methodName + "#" + sourceFile + ":";
         CoverageData? nearest = null;
         int nearestDistance = int.MaxValue;
         foreach (KeyValuePair<string, CoverageData> entry in coverageMap)
@@ -151,9 +163,10 @@ public static class CrapAnalyzer
         IReadOnlyDictionary<string, CoverageData> coverageMap,
         string typeName,
         string methodName,
+        string sourceFile,
         int line)
     {
-        string exactKey = typeName + "#" + methodName + ":" + line.ToString(CultureInfo.InvariantCulture);
+        string exactKey = typeName + "#" + methodName + "#" + sourceFile + ":" + line.ToString(CultureInfo.InvariantCulture);
         return coverageMap.TryGetValue(exactKey, out CoverageData? exact) ? exact.CoveragePercent : null;
     }
 }

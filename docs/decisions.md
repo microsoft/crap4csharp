@@ -35,7 +35,7 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
 | Coverage | Coverlet → **Cobertura** (line counters) | JaCoCo `INSTRUCTION` has no exact analog — absolute numbers differ, algorithm identical |
 | Test framework | **xUnit** | + `Microsoft.NET.Test.Sdk`, `coverlet.collector` |
 | Assertions | **FluentAssertions 7.x**, pinned `[7.0.0,8.0.0)` | v8+ is commercial (Xceed); lock file enforces the pin |
-| Coverage key | Roslyn enclosing-type **FQN** per method | C# allows many types per file; filename keys mis-match Cobertura |
+| Coverage key | `TypeName#method#basename:line` — Roslyn enclosing-type **FQN** + method + source-file **basename** (T24, departure #12); `:line` stays LAST | C# allows many types per file **and** partial classes split one type across files, so overloads at overlapping min-lines collided; the FQN keys Cobertura, the basename segregates the per-file entries |
 | Module root | nearest **`.sln`** (fallback `.csproj` → project root) | so `dotnet test` actually runs tests — **SUPERSEDED at T17 by departure #9 (Model B): the owning unit is the nearest `.csproj` (bounded); `.sln` is no longer a marker** |
 
 ## Ratified conventions (Mr. Das)
@@ -158,14 +158,18 @@ faithful 1:1 port of `crap4java`'s `CrapAnalyzer` (`analyze`/`lookupCoverage`/`e
 files itself and drives both parsers (T9 `CSharpMethodParser`, T10 `CoberturaCoverageParser`) itself,
 exactly as the Java original does. **No new behavioral departure beyond the already-approved set #1–#7.**
 
-- **Frozen reciprocal contract — CONSUMER end discharged (T11).** `CrapAnalyzer` builds its exact/
-  nearest lookup keys as `typeName + "#" + methodName + ":" + line` from `MethodDescriptor.TypeName`
-  (T9) and matches them byte-for-byte against T10's emitted map keys — the trailing `":"` is
-  load-bearing (stops `alpha` matching `alphaBeta`). Any drift on either producer silently collapses a
-  method's coverage to `N/A`. Line formatting uses `InvariantCulture` (departure #3) so keys round-trip.
-  Pinned end-to-end by `ResolvesCoverageThroughFrozenReciprocalKeyEndToEnd` (a nested generic
-  ``Demo.Outer`1.Inner`2`` resolving to a real 100%, not `N/A`). The T9⇄T10⇄T11 triad is now closed on
-  all three ends.
+- **Frozen reciprocal contract — CONSUMER end discharged (T11; key EXTENDED at T24).** `CrapAnalyzer`
+  builds its exact/nearest lookup keys as
+  `typeName + "#" + methodName + "#" + sourceFile + ":" + line` from `MethodDescriptor.TypeName`
+  (T9) and `Path.GetFileName(file)` (T24, departure #12), and matches them byte-for-byte against T10's
+  emitted map keys — the `#sourceFile` segment segregates per-file overloads of a partial class, and the
+  trailing `":line"` is load-bearing (kept LAST so `ParseTrailingLine`'s last-`:` split and the
+  nearest-line scan are unchanged; the earlier `":"` still stops `alpha` matching `alphaBeta`). Any drift
+  on either producer silently collapses a method's coverage to `N/A`. Line formatting uses
+  `InvariantCulture` (departure #3) so keys round-trip. Pinned end-to-end by
+  `ResolvesCoverageThroughFrozenReciprocalKeyEndToEnd` (a nested generic ``Demo.Outer`1.Inner`2``
+  resolving to a real 100%, not `N/A`) and by `SplitPartialClassOverloadsResolveToOwnFileCoverage`
+  (T24). The T9⇄T10⇄T11 triad is now closed on all three ends.
 
 - **D-T11a — `classNameFromSource` and the dead `projectRoot` param DROPPED (RESOLVED).** Java derived
   one `className` per file (`package` regex + filename); C# instead carries the per-method
@@ -581,6 +585,11 @@ the design rulings.
   whose triggers grow **5 → 6** — pre-run `No owning .csproj` / `span multiple projects` / `No test
   project`, post-run `No coverage report was produced` / `contained no coverage data`, and now the new
   post-run `multiple coverage reports`.
+  - **T24 update (append-only; does NOT amend D-T22a's ruling above).** Departure **#12** IS introduced
+    later (T24 — per-file coverage-key basename). This does **not** contradict "no new #12" above: that
+    clause correctly declined to number the *multiple-reports refusal* (which stays folded under #1).
+    #12 is an unrelated C#-specific coverage-key collision fix; it neither renumbers #1–#11 nor touches
+    the fail-fast family. See the **T24 register** and departure **#12**.
 - **D-T22b — `Locate` → `LocateAll` (locator surfaces ALL matches; CLI owns the exit).**
   `CoverageReportLocator.Locate` (a single ordinal-first `FirstOrDefault` pick) is replaced by
   `LocateAll`, which returns **every** discovered `coverage.cobertura.xml` **ordinal-sorted**
@@ -593,6 +602,54 @@ the design rulings.
   reports`** to stderr and exits **1** — our convention, NOT mutate4csharp's `2` (mirrors departures
   #1/#9). Fired after the coverage run, during report location. Tests assert the anchor substring, so
   surrounding wording may re-tune freely.
+
+## T24 register — coverage-key collision; per-file basename segment (S9; Anders T24 review, 🟢)
+
+Resolved decisions and watch-items from the final S9 attribution task. T24 is a **C#-specific**
+enrichment with **no Java analog**: the frozen reciprocal key gains a source-file **basename** segment
+so overloads (and, post-T23, compiler-generated members) of a **partial class split across files** stop
+borrowing each other's coverage via the nearest-line lookup. Adds **departure #12** (the first new
+departure number since #11); `NormalizeTypeName` and the frozen `TypeName` form are **unchanged**.
+
+- **D-T24a — key format RULED by Mr. Das: `TypeName#method#basename:line`.** The key gains ONE new
+  segment — `Path.GetFileName(<class filename>)` — inserted **between** `#method` and `:line`. Ruled
+  over the signature-based alternative (`TypeName#method(sig):line`): the basename is what coverlet
+  already emits per `<class filename=…>` and is the exact dimension a split partial class varies,
+  whereas method signatures would also have to be threaded from Roslyn and normalized to coverlet's
+  spelling (a second frozen contract). `:line` (the MIN `@number`) **stays LAST** so `ParseTrailingLine`'s
+  last-`:` split and the reciprocal nearest-line scan are byte-for-byte unchanged.
+- **D-T24b — `NormalizeTypeName` and the frozen `TypeName` form are UNCHANGED (contract preserved).**
+  The basename is a **new, separate** key segment, **not** part of `TypeName`, so the T9⇄T10⇄T11 frozen
+  reciprocal `TypeName` contract (and its D-table pins) is untouched. `NormalizeTypeName` keeps emitting
+  the same dotted-FQN-plus-arity form; only the surrounding key grows a `#basename` segment.
+- **D-T24c — BOTH producers + the consumer thread the basename identically.** Producer 1
+  `ReadClassMethods` and the T21 state-machine path `ReadStateMachineMoveNext` each read
+  `Path.GetFileName(classElement filename)` **once per `<class>`** and emit `…#method#basename:line`; the
+  consumer `CrapAnalyzer` computes `Path.GetFileName(file)` **once per source file** (every method parsed
+  from that file shares it) and threads it through `LookupCoverage`/`ExactCoverage`/`NearestCoverage`.
+  `Path.GetFileName` normalizes both `/`- and `\`-separated coverlet paths, so producer and consumer agree
+  OS-independently (departure #3).
+- **D-T24d — a missing/empty `filename` yields an unmatchable key (fail-safe to N/A, never
+  mis-attribute).** If coverlet emits no `filename`, the producer basename is `""` → a `Type#method#:line`
+  key that the consumer (which always has a real `Path.GetFileName(file)`) can never match → the method
+  stays per-method `N/A` (departure #1 family), strictly SAFER than the pre-T24 silent cross-file borrow.
+  No new exit-code behavior.
+- **D-T24e — the T21 state-machine key ALSO gains the basename (kept in lockstep).** Departure #11's
+  attribution key becomes `NormalizeTypeName(enclosing)#Method#basename:minMoveNextLine` in the same
+  shape, so async/iterator attribution keeps matching post-T24. Departure #11's prose describes the
+  pre-basename key and is read as superseded by this register (no #11 text edit — its behavior is
+  unchanged; only the key literal grew a segment).
+- **D-T24f — reciprocal-key parity suite RESHAPED; split-partial-class collision proof ADDED.** The
+  FROZEN T10/T11 key-parity tests are re-pinned to the three-segment `TypeName#method#basename:line` form
+  (exact + nearest); `SplitPartialClassOverloadsResolveToOwnFileCoverage` proves two `Demo.Widget.Render`
+  overloads in `A.cs`/`B.cs` at overlapping min-lines resolve to their OWN file's coverage
+  (A → 100%/CRAP 1.0, B → 0%/CRAP 6.0) instead of borrowing. Bhaskar re-verifies the entire attribution
+  suite green.
+- **D-T24g — residual same-basename-different-directory collision ACCEPTED (documented, not fixed).**
+  The key carries the **basename only**, not the directory, so two partial-class files with the same
+  basename in different directories (`Foo/Widget.cs` + `Bar/Widget.cs`) can still collide. Judged rare;
+  fixing it would require threading a project-relative path coverlet does not always emit consistently.
+  Logged as a watch-item; revisit only if a real target hits it.
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
@@ -747,6 +804,21 @@ the design rulings.
     functions (`<M>g__...|N`) remain compiler-generated-skipped — their coverage-consistency question is
     a known related gap, DEFERRED (finding #3). (Ruled by Mr. Das: FIX; attribute `<M>d__N` -> source
     async/iterator method; do NOT fold in lambdas/local functions.)
+
+12. **Per-file coverage-key basename (C#-specific; no Java analog)** — the frozen reciprocal coverage
+    key gains a source-file **basename** segment: `TypeName#method#Path.GetFileName(file):line` (the
+    `:line` MIN-`@number` stays LAST for the reciprocal nearest-line lookup). A C# **partial class split
+    across files** can declare overloads — and, post-T23, compiler-generated members — at overlapping
+    min-lines; coverlet emits one `<class>` per file, so the pre-T24 `TypeName#method:line` key collided
+    and the overloads borrowed each other's coverage through the nearest-line scan. The basename
+    segregates the per-file entries. `NormalizeTypeName` and the frozen `TypeName` form are **unchanged**
+    (the basename is a new, separate segment, not part of `TypeName`); both producers (`ReadClassMethods`
+    + the T21 `ReadStateMachineMoveNext`) and the consumer (`CrapAnalyzer`) thread it identically, and a
+    missing/empty `filename` yields an unmatchable `Type#method#:line` key → per-method `N/A`, never a
+    mis-attribution. **Observable behavior:** overloads of a split partial class now report their OWN
+    file's coverage instead of borrowing a sibling's. A C#-ecosystem correctness fix with no crap4java
+    counterpart (Java has no partial classes). See the **T24 register** (D-T24a–g). (Ruled by Mr. Das:
+    key format `TypeName#method#basename:line`.)
 
 ## Cyclomatic complexity — authoritative node set
 

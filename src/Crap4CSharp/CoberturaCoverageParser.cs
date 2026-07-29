@@ -15,11 +15,19 @@ using System.Xml.Linq;
 //     is Ignore (not Prohibit): the resolver already blocks every external fetch, and Ignore keeps the
 //     DOCTYPE-tolerance test faithful while still failing safely on a malicious entity reference.
 //   * D-T10b -- NormalizeTypeName keeps the backtick generic arity untouched, emitting the frozen
-//     reciprocal TypeName form that CSharpMethodParser.TypeNameOf produces (the load-bearing coverage
-//     key -- any drift silently collapses a method's coverage to N/A).
+//     reciprocal TypeName form that CSharpMethodParser.TypeNameOf produces -- the TypeName segment of
+//     the load-bearing coverage key (TypeName#method#basename:line); any drift silently collapses a
+//     method's coverage to N/A.
 //   * Key line -- Cobertura's <method> carries no declaration-line attribute, so the key uses the MIN
 //     of the method's <line @number> values; T11's exact->nearest lookup (a faithful port of
 //     CrapAnalyzer.lookupCoverage) resolves it into the method's own StartLine range.
+//   * D-T24 (departure #12) -- the coverage key gains a source-file basename segment before ":line":
+//     TypeName#method#Path.GetFileName(<class filename>):line. A C# partial class split across files can
+//     declare overloads (and, post-T23, compiler-generated members) at overlapping min-lines -- coverlet
+//     emits one <class> per file, so the pre-T24 TypeName#method:line collided. The basename segregates
+//     the per-file entries; ":line" stays LAST so ParseTrailingLine is unchanged, and NormalizeTypeName
+//     is unchanged (basename is a NEW segment, not part of TypeName). A missing/empty filename yields an
+//     empty basename -> an unmatchable Type#method#:line key (per-method N/A, never mis-attributed).
 // Java's non-instantiable `final class` with a private ctor maps to the idiomatic C# `static class`
 // (public because the `internal` modifier is banned in the single-assembly design -- ratified C1).
 public static partial class CoberturaCoverageParser
@@ -56,6 +64,12 @@ public static partial class CoberturaCoverageParser
             {
                 string rawClassName = classElement.Attribute("name")?.Value ?? string.Empty;
 
+                // T24 (departure #12): basename segment of the coverage key. Read once per <class> from
+                // its filename attribute; Path.GetFileName strips any absolute/relative dir prefix
+                // (coverlet may emit either, '/'- or '\'-separated). A missing/empty attribute yields ""
+                // -> an unmatchable key (D-T24d), never a mis-attribution.
+                string basename = Path.GetFileName(classElement.Attribute("filename")?.Value ?? string.Empty);
+
                 // R3 (T21): async/iterator state-machine classes (Enclosing/<Method>d__N) are intercepted
                 // HERE, at class level, and their user-body coverage is re-attributed to the source method
                 // that the compiler lowered. Diverting them upstream keeps IsCompilerGeneratedMethod's
@@ -63,11 +77,11 @@ public static partial class CoberturaCoverageParser
                 // the lambda display classes that fail the d__ match) flows through ReadClassMethods.
                 if (TryParseStateMachine(rawClassName, out string enclosingRaw, out string sourceMethod))
                 {
-                    ReadStateMachineMoveNext(classElement, NormalizeTypeName(enclosingRaw), sourceMethod, coverage);
+                    ReadStateMachineMoveNext(classElement, NormalizeTypeName(enclosingRaw), sourceMethod, basename, coverage);
                 }
                 else
                 {
-                    ReadClassMethods(classElement, rawClassName, NormalizeTypeName(rawClassName), coverage);
+                    ReadClassMethods(classElement, rawClassName, NormalizeTypeName(rawClassName), basename, coverage);
                 }
             }
 
@@ -138,6 +152,7 @@ public static partial class CoberturaCoverageParser
         XElement classElement,
         string rawClassName,
         string typeName,
+        string basename,
         Dictionary<string, CoverageData> coverage)
     {
         XElement? methodsElement = classElement.Element("methods");
@@ -166,7 +181,9 @@ public static partial class CoberturaCoverageParser
             int missedLines = lines.Count(line => ParseIntOrZero(line.Attribute("hits")?.Value) == 0);
             int minChildLine = lines.Min(line => ParseIntOrZero(line.Attribute("number")?.Value));
 
-            string key = typeName + "#" + methodName + ":" + minChildLine.ToString(CultureInfo.InvariantCulture);
+            // T24: TypeName#method#basename:line -- the basename segregates per-file overloads of a
+            // partial class; ":line" (MIN @number) stays LAST for the reciprocal nearest-line lookup.
+            string key = typeName + "#" + methodName + "#" + basename + ":" + minChildLine.ToString(CultureInfo.InvariantCulture);
             coverage[key] = new CoverageData(missedLines, coveredLines);
         }
     }
@@ -209,16 +226,18 @@ public static partial class CoberturaCoverageParser
 
     // R3 (T21) attribution. A state machine's user-authored body is compiler-lowered onto MoveNext, so
     // MoveNext's <line> hits ARE the source method's real coverage. Emit a single entry keyed on the
-    // ENCLOSING type + the demangled source-method name, counted IDENTICALLY to ReadClassMethods (covered
-    // = hits > 0, missed = hits == 0, key line = MIN @number). D-T21a: attribute MoveNext ONLY, never
-    // aggregate the class -- the sibling synthetics (.ctor / SetStateMachine / IDisposable.Dispose /
-    // get_Current / Reset / GetEnumerator) carry only synthetic noise. If MoveNext is absent, or present
-    // but line-less, emit NOTHING (the faithful analog of ReadClassMethods' "no lines -> skip"; the
-    // method stays N/A and T11's nearest-line lookup resolves it from the source method's StartLine).
+    // ENCLOSING type + the demangled source-method name + the source-file basename (T24), counted
+    // IDENTICALLY to ReadClassMethods (covered = hits > 0, missed = hits == 0, key line = MIN @number).
+    // D-T21a: attribute MoveNext ONLY, never aggregate the class -- the sibling synthetics (.ctor /
+    // SetStateMachine / IDisposable.Dispose / get_Current / Reset / GetEnumerator) carry only synthetic
+    // noise. If MoveNext is absent, or present but line-less, emit NOTHING (the faithful analog of
+    // ReadClassMethods' "no lines -> skip"; the method stays N/A and T11's nearest-line lookup resolves
+    // it from the source method's StartLine).
     private static void ReadStateMachineMoveNext(
         XElement classElement,
         string normalizedEnclosing,
         string sourceMethod,
+        string basename,
         Dictionary<string, CoverageData> coverage)
     {
         XElement? moveNext = classElement.Element("methods")?
@@ -240,7 +259,8 @@ public static partial class CoberturaCoverageParser
         int missedLines = lines.Count(line => ParseIntOrZero(line.Attribute("hits")?.Value) == 0);
         int minChildLine = lines.Min(line => ParseIntOrZero(line.Attribute("number")?.Value));
 
-        string key = normalizedEnclosing + "#" + sourceMethod + ":" + minChildLine.ToString(CultureInfo.InvariantCulture);
+        // T24: EnclosingType#sourceMethod#basename:line -- same shape as ReadClassMethods; ":line" LAST.
+        string key = normalizedEnclosing + "#" + sourceMethod + "#" + basename + ":" + minChildLine.ToString(CultureInfo.InvariantCulture);
         coverage[key] = new CoverageData(missedLines, coveredLines);
     }
 

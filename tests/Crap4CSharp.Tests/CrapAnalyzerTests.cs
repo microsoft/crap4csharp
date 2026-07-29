@@ -207,11 +207,11 @@ public class CrapAnalyzerTests
     {
         Dictionary<string, CoverageData> coverageMap = new(StringComparer.Ordinal)
         {
-            ["demo.Sample#alpha:10"] = new CoverageData(1, 3),
-            ["demo.Sample#alpha:12"] = new CoverageData(0, 8),
+            ["demo.Sample#alpha#Sample.cs:10"] = new CoverageData(1, 3),
+            ["demo.Sample#alpha#Sample.cs:12"] = new CoverageData(0, 8),
         };
 
-        double? coverage = CrapAnalyzer.LookupCoverage(coverageMap, "demo.Sample", "alpha", 10);
+        double? coverage = CrapAnalyzer.LookupCoverage(coverageMap, "demo.Sample", "alpha", "Sample.cs", 10);
 
         coverage.Should().BeApproximately(75.0, 0.001);
     }
@@ -222,11 +222,11 @@ public class CrapAnalyzerTests
     {
         Dictionary<string, CoverageData> coverageMap = new(StringComparer.Ordinal)
         {
-            ["demo.Sample#alpha:10"] = new CoverageData(1, 3),
-            ["demo.Sample#alpha:15"] = new CoverageData(0, 8),
+            ["demo.Sample#alpha#Sample.cs:10"] = new CoverageData(1, 3),
+            ["demo.Sample#alpha#Sample.cs:15"] = new CoverageData(0, 8),
         };
 
-        double? coverage = CrapAnalyzer.LookupCoverage(coverageMap, "demo.Sample", "alpha", 13);
+        double? coverage = CrapAnalyzer.LookupCoverage(coverageMap, "demo.Sample", "alpha", "Sample.cs", 13);
 
         coverage.Should().BeApproximately(100.0, 0.001);
     }
@@ -238,11 +238,11 @@ public class CrapAnalyzerTests
     {
         Dictionary<string, CoverageData> coverageMap = new(StringComparer.Ordinal)
         {
-            ["demo.Sample#alpha:10"] = new CoverageData(1, 3),
-            ["demo.Sample#alpha:14"] = new CoverageData(0, 8),
+            ["demo.Sample#alpha#Sample.cs:10"] = new CoverageData(1, 3),
+            ["demo.Sample#alpha#Sample.cs:14"] = new CoverageData(0, 8),
         };
 
-        CoverageData? nearest = CrapAnalyzer.NearestCoverage(coverageMap, "demo.Sample", "alpha", 12);
+        CoverageData? nearest = CrapAnalyzer.NearestCoverage(coverageMap, "demo.Sample", "alpha", "Sample.cs", 12);
 
         nearest.Should().NotBeNull();
         nearest!.CoveragePercent.Should().BeApproximately(75.0, 0.001);
@@ -254,7 +254,7 @@ public class CrapAnalyzerTests
     {
         Dictionary<string, CoverageData> empty = new(StringComparer.Ordinal);
 
-        double? coverage = CrapAnalyzer.LookupCoverage(empty, "demo.Sample", "alpha", 10);
+        double? coverage = CrapAnalyzer.LookupCoverage(empty, "demo.Sample", "alpha", "Sample.cs", 10);
 
         coverage.Should().BeNull();
     }
@@ -273,6 +273,9 @@ public class CrapAnalyzerTests
     public void ParseTrailingLineReturnsParsedLineNumberForValidKey()
     {
         CrapAnalyzer.ParseTrailingLine("demo.Sample#alpha:10").Should().Be(10);
+
+        // T24: the key gains a #basename segment before ':line'; the last-':' split still finds the line.
+        CrapAnalyzer.ParseTrailingLine("demo.Sample#alpha#Sample.cs:10").Should().Be(10);
     }
 
     // P8 <- parseTrailingLineAcceptsLeadingSeparator.
@@ -612,6 +615,107 @@ public class CrapAnalyzerTests
             lower.Complexity.Should().Be(1);
             lower.CoveragePercent.Should().BeApproximately(100.0, 0.001);
             lower.CrapScore.Should().BeApproximately(1.0, 0.00001);
+        });
+    }
+
+    // T24 collision proof: a partial class Widget split across A.cs + B.cs declares an overload of Render
+    // in EACH file, both at StartLine 4 with an overlapping coverage min-line (:6). Coverlet emits one
+    // <class name="Demo.Widget"> per file, so the pre-T24 Type#method:line key collided and BOTH overloads
+    // borrowed whichever entry the second parse left in the map. T24's #<basename> binds each overload to
+    // ITS OWN file's coverage: Render(int)/A.cs -> 100%, Render(string)/B.cs -> 0%. Complexity (1 vs 2)
+    // pins file -> metric unambiguously since both methods are named Render.
+    [Fact]
+    public void SplitPartialClassOverloadsResolveToOwnFileCoverage()
+    {
+        const string aSource = """
+            namespace Demo;
+            partial class Widget
+            {
+                int Render(int x)
+                {
+                    return x + 1;
+                }
+            }
+            """;
+
+        const string bSource = """
+            namespace Demo;
+            partial class Widget
+            {
+                int Render(string s)
+                {
+                    if (s.Length > 0)
+                    {
+                        return 1;
+                    }
+                    return 0;
+                }
+            }
+            """;
+
+        // A.cs: Render(int)'s body line 6 hit -> 100%. B.cs: Render(string)'s body line 6 unhit -> 0%.
+        // Both overloads have StartLine 4, so each resolves its own file's :6 entry at nearest distance 2.
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Widget" filename="A.cs">
+                      <methods>
+                        <method name="Render" signature="(System.Int32)">
+                          <lines>
+                            <line number="6" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                    <class name="Demo.Widget" filename="B.cs">
+                      <methods>
+                        <method name="Render" signature="(System.String)">
+                          <lines>
+                            <line number="6" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string aPath = WriteFile(dir, "A.cs", aSource);
+            string bPath = WriteFile(dir, "B.cs", bSource);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([aPath, bPath], cobertura);
+
+            result.Should().HaveCount(2);
+
+            // Render(int) -- A.cs, CC 1, its OWN file's 100% (NOT borrowed).
+            MethodMetrics fromA = result.Single(m => m.Complexity == 1);
+            fromA.MethodName.Should().Be("Render");
+            fromA.ClassName.Should().Be("Demo.Widget");
+            fromA.CoveragePercent.Should().BeApproximately(100.0, 0.001);
+            fromA.CrapScore.Should().BeApproximately(1.0, 0.00001);
+
+            // Render(string) -- B.cs, CC 2, its OWN file's 0% (CRAP 6.0). B.cs's <class> is parsed LAST,
+            // so its 0% entry is the one that SURVIVES the pre-T24 collision -- fromB stays 0% either way.
+            // It is therefore the Render(int)/A.cs 100% assertion ABOVE (fromA), NOT this one, that fails
+            // loudly if the borrowing bug regresses: A.cs's Render(int) would borrow B.cs's surviving 0%.
+            MethodMetrics fromB = result.Single(m => m.Complexity == 2);
+            fromB.MethodName.Should().Be("Render");
+            fromB.ClassName.Should().Be("Demo.Widget");
+            fromB.CoveragePercent.Should().BeApproximately(0.0, 0.001);
+            fromB.CrapScore.Should().BeApproximately(6.0, 0.00001);
+
+            // Residual (accepted, T24 / departure #12): the key carries the basename, NOT the directory,
+            // so two partial-class files sharing the SAME basename in DIFFERENT directories (e.g.
+            // Foo/Widget.cs + Bar/Widget.cs) still collide. Rare; documented-not-fixed. See
+            // docs/decisions.md T24 register.
         });
     }
 

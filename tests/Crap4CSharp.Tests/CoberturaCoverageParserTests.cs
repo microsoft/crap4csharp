@@ -62,8 +62,8 @@ public class CoberturaCoverageParserTests
         {
             IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
 
-            result["Demo.Sample#Alpha:10"].CoveragePercent.Should().BeApproximately(90.0, 0.001);
-            result["Demo.Sample#Beta:20"].CoveragePercent.Should().BeApproximately(0.0, 0.001);
+            result["Demo.Sample#Alpha#Sample.cs:10"].CoveragePercent.Should().BeApproximately(90.0, 0.001);
+            result["Demo.Sample#Beta#Sample.cs:20"].CoveragePercent.Should().BeApproximately(0.0, 0.001);
         });
     }
 
@@ -107,7 +107,7 @@ public class CoberturaCoverageParserTests
         {
             IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
 
-            result["Demo.Sample#Alpha:10"].CoveragePercent.Should().BeApproximately(90.0, 0.001);
+            result["Demo.Sample#Alpha#Sample.cs:10"].CoveragePercent.Should().BeApproximately(90.0, 0.001);
         });
     }
 
@@ -150,7 +150,7 @@ public class CoberturaCoverageParserTests
         {
             IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
 
-            result["Demo.Sample#Alpha:0"].CoveragePercent.Should().BeApproximately(90.0, 0.001);
+            result["Demo.Sample#Alpha#Sample.cs:0"].CoveragePercent.Should().BeApproximately(90.0, 0.001);
         });
     }
 
@@ -244,8 +244,8 @@ public class CoberturaCoverageParserTests
             IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
 
             result.Should().HaveCount(1);
-            result.Should().ContainKey("Demo.Sample#Real:9");
-            result.Keys.Should().OnlyContain(k => k == "Demo.Sample#Real:9");
+            result.Should().ContainKey("Demo.Sample#Real#Sample.cs:9");
+            result.Keys.Should().OnlyContain(k => k == "Demo.Sample#Real#Sample.cs:9");
         });
     }
 
@@ -289,8 +289,8 @@ public class CoberturaCoverageParserTests
         {
             IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
 
-            result.Should().ContainKey("Demo.C#DoAsync:12").WhoseValue.Should().Be(new CoverageData(0, 1));
-            result.Should().ContainKey("Demo.Enumerator#MoveNext:20");
+            result.Should().ContainKey("Demo.C#DoAsync#C.cs:12").WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Should().ContainKey("Demo.Enumerator#MoveNext#Enumerator.cs:20");
             result.Should().HaveCount(2);
             result.Keys.Should().NotContain(k =>
                 k.Contains("SetStateMachine", StringComparison.Ordinal)
@@ -411,21 +411,21 @@ public class CoberturaCoverageParserTests
             IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
 
             // Plain-FQN anchor: 5 covered lines, aggregate + <conditions> ignored -> 100%.
-            result.Should().ContainKey("Microsoft.Crap4CSharp.CrapScore#Calculate:11")
+            result.Should().ContainKey("Microsoft.Crap4CSharp.CrapScore#Calculate#CrapScore.cs:11")
                 .WhoseValue.Should().Be(new CoverageData(0, 5));
 
             // Frozen reciprocal against REAL coverlet '/'-separated + backtick-arity names.
-            result.Should().ContainKey("Sample.Outer.Inner#Value:9")
+            result.Should().ContainKey("Sample.Outer.Inner#Value#Types.cs:9")
                 .WhoseValue.Should().Be(new CoverageData(0, 1));
-            result.Should().ContainKey("Sample.Outer`1.Inner`2#Combine:17")
+            result.Should().ContainKey("Sample.Outer`1.Inner`2#Combine#Types.cs:17")
                 .WhoseValue.Should().Be(new CoverageData(0, 1));
-            result.Should().ContainKey("Sample.Container`1#Count:25")
+            result.Should().ContainKey("Sample.Container`1#Count#Types.cs:25")
                 .WhoseValue.Should().Be(new CoverageData(0, 1));
-            result.Should().ContainKey("Sample.Worker#UseLambda:39")
+            result.Should().ContainKey("Sample.Worker#UseLambda#Types.cs:39")
                 .WhoseValue.Should().Be(new CoverageData(0, 10));
 
             // R3/T21: the async state machine's MoveNext (lines 33-36, all hit) is attributed to DoAsync.
-            result.Should().ContainKey("Sample.Worker#DoAsync:33")
+            result.Should().ContainKey("Sample.Worker#DoAsync#Types.cs:33")
                 .WhoseValue.Should().Be(new CoverageData(0, 4));
 
             // The synthetic state-machine class, the accessors and the constructor are all absent.
@@ -478,7 +478,7 @@ public class CoberturaCoverageParserTests
         {
             IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
 
-            result.Should().ContainKey("Sample.Runner#DrainAsync:12")
+            result.Should().ContainKey("Sample.Runner#DrainAsync#Runner.cs:12")
                 .WhoseValue.Should().Be(new CoverageData(3, 7));
         });
     }
@@ -522,8 +522,60 @@ public class CoberturaCoverageParserTests
         {
             IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
 
-            result.Should().ContainKey("Sample.Paths#ResolveAbsolutePaths:40")
+            result.Should().ContainKey("Sample.Paths#ResolveAbsolutePaths#Paths.cs:40")
                 .WhoseValue.Should().Be(new CoverageData(3, 7));
+        });
+    }
+
+    [Fact]
+    public void SplitPartialClassOverloadsGetDistinctPerFileKeys()
+    {
+        // A C# partial class split across A.cs + B.cs, each declaring an overload of Render whose lowered
+        // <line> min-number OVERLAPS (both :6). Pre-T24 both mapped to "Demo.Widget#Render:6" and the
+        // second-parsed entry overwrote the first; T24's #<basename> segregates them so BOTH survive.
+        //   A.cs -> Render lines 6,7,8 all hit   -> CoverageData(0 missed, 3 covered)
+        //   B.cs -> Render lines 6,8,10 all unhit -> CoverageData(3 missed, 0 covered)
+        string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Demo.Widget" filename="A.cs">
+                      <methods>
+                        <method name="Render" signature="(System.Int32)">
+                          <lines>
+                            <line number="6" hits="1" />
+                            <line number="7" hits="1" />
+                            <line number="8" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                    <class name="Demo.Widget" filename="B.cs">
+                      <methods>
+                        <method name="Render" signature="(System.String)">
+                          <lines>
+                            <line number="6" hits="0" />
+                            <line number="8" hits="0" />
+                            <line number="10" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(xml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().HaveCount(2);
+            result.Should().ContainKey("Demo.Widget#Render#A.cs:6").WhoseValue.Should().Be(new CoverageData(0, 3));
+            result.Should().ContainKey("Demo.Widget#Render#B.cs:6").WhoseValue.Should().Be(new CoverageData(3, 0));
         });
     }
 
