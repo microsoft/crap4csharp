@@ -44,8 +44,8 @@ public sealed class CliApplication
 
     // Ports execute(String[]). Owns every exit code (§4): 0 (help / no files / max CRAP <= 8.0),
     // 1 (parse error / no owning project / files span multiple projects / no test project / no report /
-    // empty report), 2 (threshold exceeded). The coverage-runner throw and any parser throw PROPAGATE
-    // (faithful to Java's `throws Exception`); T15's Program.Main converts them to exit 1.
+    // multiple reports / empty report), 2 (threshold exceeded). The coverage-runner throw and any parser throw
+    // PROPAGATE (faithful to Java's `throws Exception`); T15's Program.Main converts them to exit 1.
     public int Execute(string[] args)
     {
         ParseOutcome parse = ParseArguments(args);
@@ -89,13 +89,28 @@ public sealed class CliApplication
 
         _coverageRunner.GenerateCoverage(testProject, _projectRoot);
 
+        // CoverageRunner deletes coverage/ before the run, so every report here is from THIS run: exactly
+        // one for a single-TFM test project, one-per-TFM for a multi-targeted one.
+        IReadOnlyList<string> reports = CoverageReportLocator.LocateAll(_projectRoot);
+
         // FAIL-FAST TRIGGER 1 (departure #1): no report produced at all.
-        string? report = CoverageReportLocator.Locate(_projectRoot);
-        if (report is null)
+        if (reports.Count == 0)
         {
             _error.WriteLine($"No coverage report was produced under '{_projectRoot}'. Ensure the test project references coverlet.collector so 'dotnet test --collect' emits coverage.cobertura.xml.");
             return 1;
         }
+
+        // FAIL-FAST TRIGGER (T22, finding #4): >1 report ⇒ a multi-targeted (<TargetFrameworks>) test
+        // project emits one coverage.cobertura.xml per TFM; a nondeterministic single-pick flips the exit
+        // code across runs on unchanged code, so refuse deterministically (same ethos as the
+        // span-multiple-projects fail-fast, #9).
+        if (reports.Count > 1)
+        {
+            _error.WriteLine($"Found multiple coverage reports under '{_projectRoot}' ({string.Join(", ", reports)}); a multi-targeted test project (<TargetFrameworks>) emits one coverage.cobertura.xml per target framework, which crap4csharp does not support. Use a single <TargetFramework> for the test project.");
+            return 1;
+        }
+
+        string report = reports[0];
 
         // FAIL-FAST TRIGGER 2 (departure #1): a report was produced but carries no coverage data. Inspect
         // the parsed map's emptiness -- NOT the metrics: a populated-but-non-matching report ALSO yields

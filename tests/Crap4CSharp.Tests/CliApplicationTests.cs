@@ -459,6 +459,27 @@ public class CliApplicationTests
         });
     }
 
+    // 21 -- NEW (T22 fail-fast): a multi-targeted test project makes coverlet emit two coverage.cobertura.xml
+    // (one per TFM); LocateAll surfaces both and CliApplication refuses deterministically -> exit 1, stderr
+    // anchor. Pinned to fail at the multiplicity gate, NOT the empty gate.
+    [Fact]
+    public void FailsFastWhenMultipleCoverageReportsProduced()
+    {
+        WithTempRoot(root =>
+        {
+            string source = ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, Alpha75Xml, 2)));
+
+            int exit = app.Execute([source]);
+
+            exit.Should().Be(1);
+            error.ToString().Should().Contain("multiple coverage reports");
+            error.ToString().Should().NotContain("contained no coverage data");
+        });
+    }
+
     private static void WithTempRoot(Action<string> test)
     {
         string root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -512,17 +533,21 @@ public class CliApplicationTests
     }
 
     // The one shared fake seam: records each command + workingDirectory and, when configured with report XML,
-    // writes it under <workingDirectory>/coverage/<guid>/coverage.cobertura.xml (the D-T12e reciprocal path
-    // CoverageReportLocator reads), then returns the configured exit code. No real process is ever launched.
+    // writes reportCount copies (default 1), each under its own <workingDirectory>/coverage/<guid>/
+    // coverage.cobertura.xml (the D-T12e reciprocal path CoverageReportLocator reads); reportCount > 1
+    // simulates a multi-targeted (<TargetFrameworks>) test project coverlet emits one report per TFM for.
+    // Returns the configured exit code. No real process is ever launched.
     private sealed class FakeExecutor : ICommandExecutor
     {
         private readonly int _exitCode;
         private readonly string? _reportXml;
+        private readonly int _reportCount;
 
-        public FakeExecutor(int exitCode, string? reportXml)
+        public FakeExecutor(int exitCode, string? reportXml, int reportCount = 1)
         {
             _exitCode = exitCode;
             _reportXml = reportXml;
+            _reportCount = reportCount;
         }
 
         public List<IReadOnlyList<string>> Commands { get; } = [];
@@ -535,10 +560,13 @@ public class CliApplicationTests
             Directories.Add(workingDirectory);
             if (_reportXml is not null)
             {
-                string reportDirectory =
-                    Path.Combine(workingDirectory, "coverage", Guid.NewGuid().ToString("N"));
-                Directory.CreateDirectory(reportDirectory);
-                File.WriteAllText(Path.Combine(reportDirectory, "coverage.cobertura.xml"), _reportXml);
+                for (int i = 0; i < _reportCount; i++)
+                {
+                    string reportDirectory =
+                        Path.Combine(workingDirectory, "coverage", Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(reportDirectory);
+                    File.WriteAllText(Path.Combine(reportDirectory, "coverage.cobertura.xml"), _reportXml);
+                }
             }
 
             return _exitCode;

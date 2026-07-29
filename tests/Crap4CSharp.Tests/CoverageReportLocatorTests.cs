@@ -2,9 +2,10 @@ namespace Microsoft.Crap4CSharp.Tests;
 
 // All C#-specific additions -- crap4java had no locator because JaCoCo's report path was a fixed constant.
 // Pure filesystem fixtures (no executor): coverlet writes coverage.cobertura.xml under a per-run GUID
-// subdirectory of <root>/coverage/, and Locate must find it, return null when it is absent, and pick the
-// ordinal-first path deterministically when several are present (departure #3). Each test uses a fresh temp
-// tree removed in a finally.
+// subdirectory of <root>/coverage/, and LocateAll must find it, return an EMPTY list when absent, and
+// surface EVERY match in ordinal order when several are present (a multi-targeted test project; departure #3)
+// -- CliApplication owns the >1 fail-fast (T22), so the locator hides no multiplicity. Each test uses a
+// fresh temp tree removed in a finally.
 public class CoverageReportLocatorTests
 {
     [Fact]
@@ -16,21 +17,21 @@ public class CoverageReportLocatorTests
             Directory.CreateDirectory(Path.GetDirectoryName(report)!);
             File.WriteAllText(report, "<coverage/>");
 
-            CoverageReportLocator.Locate(root).Should().Be(report);
+            CoverageReportLocator.LocateAll(root).Should().Equal(report);
         });
     }
 
     [Fact]
-    public void ReturnsNullWhenNoCoverageDirectory()
+    public void ReturnsEmptyWhenNoCoverageDirectory()
     {
         WithTempRoot(root =>
         {
-            CoverageReportLocator.Locate(root).Should().BeNull();
+            CoverageReportLocator.LocateAll(root).Should().BeEmpty();
         });
     }
 
     [Fact]
-    public void ReturnsNullWhenCoverageDirectoryHasNoReport()
+    public void ReturnsEmptyWhenCoverageDirectoryHasNoReport()
     {
         WithTempRoot(root =>
         {
@@ -39,16 +40,17 @@ public class CoverageReportLocatorTests
             File.WriteAllText(Path.Combine(subDir, "other.xml"), "x");
             File.WriteAllText(Path.Combine(subDir, "report.trx"), "x");
 
-            CoverageReportLocator.Locate(root).Should().BeNull();
+            CoverageReportLocator.LocateAll(root).Should().BeEmpty();
         });
     }
 
     [Fact]
-    public void SelectsOrdinalFirstReportWhenMultiplePresent()
+    public void ReturnsAllReportsInOrdinalOrderWhenMultiplePresent()
     {
         WithTempRoot(root =>
         {
-            // Fixed non-GUID subdir names so the ordinal winner is deterministic: "aaaa" < "bbbb".
+            // Fixed non-GUID subdir names so ordinal order is deterministic: "aaaa" < "bbbb". LocateAll must
+            // surface BOTH (multiplicity is a T22 fail-fast signal for CliApplication, not hidden here).
             string first = Path.Combine(root, "coverage", "aaaa", "coverage.cobertura.xml");
             string second = Path.Combine(root, "coverage", "bbbb", "coverage.cobertura.xml");
             Directory.CreateDirectory(Path.GetDirectoryName(first)!);
@@ -56,14 +58,14 @@ public class CoverageReportLocatorTests
             File.WriteAllText(first, "<coverage/>");
             File.WriteAllText(second, "<coverage/>");
 
-            CoverageReportLocator.Locate(root).Should().Be(first);
+            CoverageReportLocator.LocateAll(root).Should().Equal(first, second);
         });
     }
 
     [Fact]
     public void ThrowsOnNullProjectRoot()
     {
-        Action act = () => CoverageReportLocator.Locate(null!);
+        Action act = () => CoverageReportLocator.LocateAll(null!);
 
         act.Should().Throw<ArgumentNullException>().WithParameterName("projectRoot");
     }

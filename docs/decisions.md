@@ -232,7 +232,12 @@ with no Java counterpart (JaCoCo's report path was a fixed constant, so Java nee
   byte-for-byte or the locator silently finds nothing (a false fail-fast). Do not inline the literal
   `"coverage"` on either side and do not split it into two constants.
 
-- **D-T12f — ordinal-first single-pick is a LOAD-BEARING determinism invariant.** When more than one
+- **D-T12f — ordinal-first single-pick is a LOAD-BEARING determinism invariant.** **[SUPERSEDED at T22:
+  `Locate` is replaced by `LocateAll` (surfaces ALL matching reports ordinal-sorted, no `FirstOrDefault`
+  single-pick); >1 report now FAIL-FASTS (`multiple coverage reports`, exit 1 — our convention) instead
+  of being silently single-picked. The timing-free / ordinal-sorted / pre-run-`coverage/`-delete facts
+  below are retained as the list-ordering rationale for `LocateAll`. Body retained for audit.]**
+  When more than one
   `coverage.cobertura.xml` exists, `Locate` returns the **ordinal-first** full path
   (`OrderBy(f => f, StringComparer.Ordinal).FirstOrDefault()`) — OS-independent and timing-free (no
   mtime/`LastWriteTime`; `CoverageRunner` deletes `coverage/` before every run, so every found file is
@@ -565,6 +570,30 @@ the design rulings.
   display-class-hosted lambda's own coverage is not attributed. Out of scope for S8 (Mr. Das ruled
   surgical: `d__N` only). Flagged for a future slice if Mr. Das schedules it.
 
+## T22 register — locator surfaces all reports; multi-report refusal folds into departure #1
+
+- **D-T22a — the `multiple coverage reports` refusal REALIZES/EXTENDS departure #1 (no new #12, no
+  renumber of #1–#11).** A multi-TFM build that emits >1 `coverage.cobertura.xml` is a **fail-fast**,
+  not a silent single-pick — mirroring the T17 `span multiple projects` precedent (departure #9: Mr.
+  Das ruled FAIL-FAST, not ordinal-pick, to avoid re-introducing the cross-project misattribution
+  departure #8 was retired to remove). This adds **no** new departure number and makes **no** edit to
+  departures #1–#11 or the exit table (D-T14a); it folds under **departure #1**'s fail-fast family,
+  whose triggers grow **5 → 6** — pre-run `No owning .csproj` / `span multiple projects` / `No test
+  project`, post-run `No coverage report was produced` / `contained no coverage data`, and now the new
+  post-run `multiple coverage reports`.
+- **D-T22b — `Locate` → `LocateAll` (locator surfaces ALL matches; CLI owns the exit).**
+  `CoverageReportLocator.Locate` (a single ordinal-first `FirstOrDefault` pick) is replaced by
+  `LocateAll`, which returns **every** discovered `coverage.cobertura.xml` **ordinal-sorted**
+  (`StringComparer.Ordinal`, OS-independent per departure #3) with **no single-pick**. The
+  select-or-refuse policy moves up to `CliApplication`, which owns every exit per **D-T14a**: 0 → the
+  existing `No coverage report was produced` path, exactly 1 → proceed to parse, >1 → fail-fast.
+  Consistent with departure #9 (the resolver surfaces the set; `Execute` owns the exit).
+- **D-T22c — new greppable anchor `multiple coverage reports`, exit 1 (our convention).** When
+  `LocateAll` returns >1 path, `CliApplication` writes the bold-anchor substring **`multiple coverage
+  reports`** to stderr and exits **1** — our convention, NOT mutate4csharp's `2` (mirrors departures
+  #1/#9). Fired after the coverage run, during report location. Tests assert the anchor substring, so
+  surrounding wording may re-tune freely.
+
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
 1. **Fail fast** — when a module produces no coverage / runs no tests, exit non-zero (`1`) with a
@@ -627,8 +656,10 @@ the design rulings.
 8. **Single-pick coverage report (ordinal-first)** — **[RETIRED/CLOSED at T17 by departure #9 (Model B):
    one owning project → one test project → exactly one `coverage.cobertura.xml`, so the multi-report
    ordinal-first single-pick and its DEFERRED aggregation are no longer needed (not implemented, not
-   deferred); `CoverageReportLocator` keeps the ordinal-first `FirstOrDefault` as harmless defensive
-   determinism over the single expected report. Body retained for audit.]** `CoverageReportLocator`
+   deferred); at T22 `CoverageReportLocator.Locate` was replaced by `LocateAll`, which surfaces ALL
+   matching `coverage.cobertura.xml` paths (ordinal-sorted, no single-pick), and `CliApplication`
+   fail-fasts on more than one (multi-TFM) — so there is no `FirstOrDefault` single-pick left to be
+   "harmless" about. Body retained for audit.]** `CoverageReportLocator`
    (T12) deterministically
    selects **one** `coverage.cobertura.xml` via an **ordinal-first single pick** over the discovered
    report paths, and hands that single file to `CoberturaCoverageParser.Parse` (T10). Root-cause
