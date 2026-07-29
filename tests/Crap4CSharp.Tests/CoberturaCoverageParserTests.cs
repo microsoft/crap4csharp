@@ -206,8 +206,9 @@ public class CoberturaCoverageParserTests
     [Fact]
     public void SkipsCompilerGeneratedAndAccessorMethods()
     {
-        // get_Value/set_Value (accessors, rule 3), .ctor (rule 4) and <Real>b__0_0 (angle-bracket
-        // method, rule 2) all carry lines, yet only the real method Real survives.
+        // get_Value/set_Value (accessors, rule 3) and .ctor (rule 4) all carry lines, yet only the real
+        // method Real survives. (T23: the rule-2 intent -- an angle-bracket <M>b__/<M>g__ member -- is no
+        // longer a "skip"; it now ATTRIBUTES to its source method and is proven by the attribution tests.)
         string xml = """
             <?xml version="1.0"?>
             <coverage>
@@ -224,9 +225,6 @@ public class CoberturaCoverageParserTests
                         </method>
                         <method name="set_Value" signature="()">
                           <lines><line number="7" hits="1" /></lines>
-                        </method>
-                        <method name="&lt;Real&gt;b__0_0" signature="()">
-                          <lines><line number="8" hits="1" /></lines>
                         </method>
                         <method name="Real" signature="()">
                           <lines><line number="9" hits="1" /></lines>
@@ -580,11 +578,12 @@ public class CoberturaCoverageParserTests
     }
 
     [Fact]
-    public void KeepsLambdaDisplayClassSkipped()
+    public void AttributesLambdaDisplayClassToSourceMethod()
     {
-        // Regression guard (finding #3 stays deferred): a lambda display class Sample.Worker/<>c__Display-
-        // Class3_0 fails the state-machine match (empty name between the brackets), falls through to
-        // ReadClassMethods, and is skipped wholesale by rule 1. No attribution key must leak.
+        // T23 (finding #3 INVERTED, sec.5): a capturing-lambda display class Sample.Worker/<>c__Display-
+        // Class3_0 is routed to the B collector. Its <UseLambda>b__0_0 member (line 41, hit) demangles to
+        // the source method UseLambda and, with no body/other synthetic to anchor to, CREATES the entry
+        // Sample.Worker#UseLambda#Worker.cs:41. No angle-bracket / display-class / b__ name may leak.
         string xml = """
             <?xml version="1.0"?>
             <coverage>
@@ -610,10 +609,343 @@ public class CoberturaCoverageParserTests
         {
             IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
 
-            result.Should().BeEmpty();
+            result.Should().HaveCount(1);
+            result.Should().ContainKey("Sample.Worker#UseLambda#Worker.cs:41")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
             result.Keys.Should().NotContain(k =>
-                k.Contains("DisplayClass", StringComparison.Ordinal)
-                || k.Contains("b__", StringComparison.Ordinal));
+                k.Contains('<')
+                || k.Contains('>')
+                || k.Contains("b__", StringComparison.Ordinal)
+                || k.Contains("DisplayClass", StringComparison.Ordinal));
+        });
+    }
+
+    [Fact]
+    public void AttributesStaticLambdaDisplayClassToSourceMethod()
+    {
+        // T23 (B, static-cache variant): a non-capturing lambda is emitted on the shared cache class
+        // Sample.Worker/<>c (no DisplayClass suffix). Its <UseLambda>b__1_0 member (line 41, hit) still
+        // demangles to UseLambda and CREATES Sample.Worker#UseLambda#Worker.cs:41.
+        string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Sample.Worker/&lt;&gt;c" filename="Worker.cs">
+                      <methods>
+                        <method name="&lt;UseLambda&gt;b__1_0" signature="(System.Int32)">
+                          <lines>
+                            <line number="41" hits="4" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(xml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().HaveCount(1);
+            result.Should().ContainKey("Sample.Worker#UseLambda#Worker.cs:41")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Keys.Should().NotContain(k => k.Contains('<') || k.Contains('>'));
+        });
+    }
+
+    [Fact]
+    public void AttributesRealClassHostedLocalFunctionToSourceMethod()
+    {
+        // T23 (sec.1.C, INVOKED): a non-capturing local function is emitted DIRECTLY on the real class
+        // Demo.Calc as <Compute>g__Validate|0_0. Its lines (8,9 hit) demangle to Compute and UNION with
+        // Compute's own body (5,6 hit) into a single entry Demo.Calc#Compute#Calc.cs:5 == (0,4). No g__
+        // key leaks.
+        string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Demo.Calc" filename="Calc.cs">
+                      <methods>
+                        <method name="Compute" signature="(System.Int32)">
+                          <lines>
+                            <line number="5" hits="1" />
+                            <line number="6" hits="1" />
+                          </lines>
+                        </method>
+                        <method name="&lt;Compute&gt;g__Validate|0_0" signature="(System.Int32)">
+                          <lines>
+                            <line number="8" hits="1" />
+                            <line number="9" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(xml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().HaveCount(1);
+            result.Should().ContainKey("Demo.Calc#Compute#Calc.cs:5")
+                .WhoseValue.Should().Be(new CoverageData(0, 4));
+            result.Keys.Should().NotContain(k =>
+                k.Contains("g__", StringComparison.Ordinal) || k.Contains('<') || k.Contains('>'));
+        });
+    }
+
+    [Fact]
+    public void AttributesNeverInvokedLocalFunctionAsZeroCoverage()
+    {
+        // T23 (finding #3, parser). A never-invoked local function <Compute>g__Validate|0_0 (lines 8,9,10
+        // ALL unhit) with NO Compute body CREATES Demo.Calc#Compute#Calc.cs:8 == (3,0) -> a real 0% entry
+        // (pre-T23 this class was skipped wholesale -> empty map / N/A -> the false pass).
+        string zeroXml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Demo.Calc" filename="Calc.cs">
+                      <methods>
+                        <method name="&lt;Compute&gt;g__Validate|0_0" signature="(System.Int32)">
+                          <lines>
+                            <line number="8" hits="0" />
+                            <line number="9" hits="0" />
+                            <line number="10" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(zeroXml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().HaveCount(1);
+            result.Should().ContainKey("Demo.Calc#Compute#Calc.cs:8")
+                .WhoseValue.Should().Be(new CoverageData(3, 0));
+        });
+
+        // Variant (body + dead local fn union): a covered body (line 5) unioned with the dead local fn
+        // (lines 8,9 unhit) -> Demo.Calc#Compute#Calc.cs:5 == (2,1) -> 33.3% (was 100% pre-T23).
+        string unionXml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Demo.Calc" filename="Calc.cs">
+                      <methods>
+                        <method name="Compute" signature="(System.Int32)">
+                          <lines>
+                            <line number="5" hits="1" />
+                          </lines>
+                        </method>
+                        <method name="&lt;Compute&gt;g__Validate|0_0" signature="(System.Int32)">
+                          <lines>
+                            <line number="8" hits="0" />
+                            <line number="9" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(unionXml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().HaveCount(1);
+            CoverageData merged = result["Demo.Calc#Compute#Calc.cs:5"];
+            merged.Should().Be(new CoverageData(2, 1));
+            merged.CoveragePercent.Should().BeApproximately(33.333, 0.001);
+        });
+    }
+
+    [Fact]
+    public void AttributesAsyncLocalFunctionToSourceMethod()
+    {
+        // T23 (A1): an async local function lowers to a d__ machine nested UNDER its source method's
+        // demangled name -- Sample.Runner/<<Run>g__Drain|0_0>d__1. Its MoveNext (lines 15,16 hit; 17,18,19
+        // unhit -> covered 2, missed 3) attributes to the OUTER method Run and UNIONs with Run's own body
+        // (lines 10,11 hit) -> Sample.Runner#Run#Runner.cs:10 == (3,4). No d__/g__ key leaks.
+        string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Sample.Runner" filename="Runner.cs">
+                      <methods>
+                        <method name="Run" signature="()">
+                          <lines>
+                            <line number="10" hits="1" />
+                            <line number="11" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                    <class name="Sample.Runner/&lt;&lt;Run&gt;g__Drain|0_0&gt;d__1" filename="Runner.cs">
+                      <methods>
+                        <method name="MoveNext" signature="()">
+                          <lines>
+                            <line number="15" hits="1" />
+                            <line number="16" hits="1" />
+                            <line number="17" hits="0" />
+                            <line number="18" hits="0" />
+                            <line number="19" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(xml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().HaveCount(1);
+            result.Should().ContainKey("Sample.Runner#Run#Runner.cs:10")
+                .WhoseValue.Should().Be(new CoverageData(3, 4));
+            result.Keys.Should().NotContain(k =>
+                k.Contains("d__", StringComparison.Ordinal)
+                || k.Contains("g__", StringComparison.Ordinal)
+                || k.Contains('<') || k.Contains('>'));
+        });
+    }
+
+    [Fact]
+    public void MergesMultipleSyntheticMembersIntoOneSourceMethodEntry()
+    {
+        // T23 (union/nested): a method Foo with a body (line 5 hit), a real-class-hosted local function
+        // <Foo>g__Local|0_0 (line 8 hit) AND a display-class lambda Demo.Box/<>c #<Foo>b__0_1 (line 9 hit)
+        // -- three DISJOINT-line coverlet members -- all merge into ONE entry Demo.Box#Foo#Box.cs:5 ==
+        // (0,3). Proves the faithful disjoint-line union across all three synthetic shapes.
+        string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Demo.Box" filename="Box.cs">
+                      <methods>
+                        <method name="Foo" signature="()">
+                          <lines>
+                            <line number="5" hits="1" />
+                          </lines>
+                        </method>
+                        <method name="&lt;Foo&gt;g__Local|0_0" signature="()">
+                          <lines>
+                            <line number="8" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                    <class name="Demo.Box/&lt;&gt;c" filename="Box.cs">
+                      <methods>
+                        <method name="&lt;Foo&gt;b__0_1" signature="()">
+                          <lines>
+                            <line number="9" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(xml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().HaveCount(1);
+            result.Should().ContainKey("Demo.Box#Foo#Box.cs:5")
+                .WhoseValue.Should().Be(new CoverageData(0, 3));
+            result.Keys.Should().NotContain(k =>
+                k.Contains("g__", StringComparison.Ordinal)
+                || k.Contains("b__", StringComparison.Ordinal)
+                || k.Contains('<') || k.Contains('>'));
+        });
+    }
+
+    [Fact]
+    public void MergesSyntheticIntoNearestOverloadNotSibling()
+    {
+        // T23 (overload safety, C6 family): two same-file overloads of M (bodies @10 and @30, each hit) and
+        // one uncovered lambda Demo.Calc/<>c__DisplayClass #<M>b__ (line 12, unhit). The nearest-body merge
+        // folds the lambda into the NEAREST overload (:10 -> (1,1)); the far overload :30 stays UNCHANGED
+        // (0,1). A global union would blend both and could over-report -> this proves it does not.
+        string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Demo.Calc" filename="Calc.cs">
+                      <methods>
+                        <method name="M" signature="(System.Int32)">
+                          <lines>
+                            <line number="10" hits="1" />
+                          </lines>
+                        </method>
+                        <method name="M" signature="(System.String)">
+                          <lines>
+                            <line number="30" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                    <class name="Demo.Calc/&lt;&gt;c__DisplayClass0_0" filename="Calc.cs">
+                      <methods>
+                        <method name="&lt;M&gt;b__0" signature="()">
+                          <lines>
+                            <line number="12" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(xml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().HaveCount(2);
+            result.Should().ContainKey("Demo.Calc#M#Calc.cs:10")
+                .WhoseValue.Should().Be(new CoverageData(1, 1));
+            result.Should().ContainKey("Demo.Calc#M#Calc.cs:30")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
         });
     }
 

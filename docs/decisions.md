@@ -574,6 +574,13 @@ the design rulings.
   display-class-hosted lambda's own coverage is not attributed. Out of scope for S8 (Mr. Das ruled
   surgical: `d__N` only). Flagged for a future slice if Mr. Das schedules it.
 
+- **D-T21e — RESOLVED at T23 (finding #3 CLOSED; append-only).** T23's **departure #13** generalizes the
+  T21 attribution to lambdas (`<M>b__N`), local functions (`<M>g__L|N`) and async-locals, so the
+  finding-#3 gap DEFERRED above is now closed: a display-class-hosted lambda's / local function's own
+  coverage IS attributed and UNIONed into its source method — its earlier SKIP behavior INVERTS to
+  attribution. Departure #11's `d__N` async/iterator behavior is UNCHANGED; #13 only ADDS the other
+  member shapes (no edit to #11's prose). See the **T23 register** (D-T23a–e) and **departure #13**.
+
 ## T22 register — locator surfaces all reports; multi-report refusal folds into departure #1
 
 - **D-T22a — the `multiple coverage reports` refusal REALIZES/EXTENDS departure #1 (no new #12, no
@@ -650,6 +657,65 @@ departure number since #11); `NormalizeTypeName` and the frozen `TypeName` form 
   basename in different directories (`Foo/Widget.cs` + `Bar/Widget.cs`) can still collide. Judged rare;
   fixing it would require threading a project-relative path coverlet does not always emit consistently.
   Logged as a watch-item; revisit only if a real target hits it.
+
+## T23 register — compiler-generated member coverage attribution (S9; Anders T23 review, 🟢)
+
+Resolved decisions and residuals for the final S9 attribution task, which GENERALIZES T21. T23
+attributes EVERY compiler-generated member — lambdas (`<M>b__N`), local functions (`<M>g__L|N`) and
+async-locals (`<<M>g__...>d__N`) — to its enclosing SOURCE method and UNIONs it into that method's
+coverage, closing finding #3 (never-invoked lambdas/local functions previously reported `N/A` and
+escaped the exit-2 gate). Adds **departure #13**; departure #11's `d__N` async/iterator behavior is
+UNCHANGED and its A2 direct-emit path (`ReadStateMachineMoveNext`) is byte-for-byte preserved. See
+departure #13 for the behavioral contract; this register records the design rulings.
+
+- **D-T23a — one demangler + A→B→C class-level precedence (surgical; generalizes D-T21b).** A new
+  `SyntheticMemberNameRegex` (`^<([^<>]+)>[bg]__`) extracts the source method from a compiler-generated
+  MEMBER name — `[^<>]+` is the first angle-bracket group, which a user method never contains. `Parse`
+  routes each `<class>` by precedence: **A** a state machine (`TryParseStateMachine`), split into **A1**
+  async-local (the inner name ITSELF demangles via the member regex → COLLECT its `MoveNext` against the
+  outer method) or **A2** plain async/iterator (a bare inner `M` → the UNCHANGED T21
+  `ReadStateMachineMoveNext` DIRECT-EMIT); **B** a lambda display class (`TryGetDisplayClassEnclosing` —
+  last `/`|`+` segment starts with `<>c`) → COLLECT each `<M>b__`/`<M>g__` member; **C** a real class →
+  `ReadClassMethods`, which now COLLECTS real-class-hosted `b__`/`g__` members before its skip predicate.
+  Precedence is unambiguous: a plain `d__` has `inner="M"` (A2), an async-local `d__` has
+  `inner="<M>g__L|N"` (A1), and a `<>c` never carries a `>d__N` tail so it can only reach B.
+
+- **D-T23b — phase-2 nearest-body MERGE is a faithful disjoint-line UNION; same-file overloads preserved
+  (C6).** Members are COLLECTED in phase 1 (document order) as `SyntheticContribution` carriers, then
+  `MergeSyntheticContributions` folds each into the NEAREST existing `Type#SourceMethod#basename:*`
+  entry (closest trailing line by `Math.Abs`, strict `<`, first-in-enumeration wins ties) — MIRRORING
+  `CrapAnalyzer.NearestCoverage` / W-T11a — else CREATES one at the member's MinLine. Summing
+  `(missed, covered)` is a set UNION, not a double-count: every physical source line is owned by exactly
+  ONE coverlet `<method>`, so body and synthetic lines are DISJOINT. Because the anchor is nearest-line,
+  a synthetic folds into ITS OWN overload's body span, so distinct same-file overloads are NEVER blended
+  (C6 preserved). The inner scan is read-only and the map is mutated AFTER it, so the map is never
+  enumerated while mutated. The producer keeps a producer-local `ParseTrailingLine` (it must NOT depend
+  on the consumer `CrapAnalyzer`), mirroring the consumer's last-`:` semantics.
+
+- **D-T23c — safety property: `filename` mismatch → safe `N/A`, never a false pass (D-T24d family).**
+  Each member key carries the display-class / state-machine `filename` basename (T24). If that differs
+  from the enclosing method's own source file, the UNIONed key never matches the consumer's
+  `Type#method#Path.GetFileName(file):` prefix, so the method stays per-method `N/A` — a SAFE
+  under-report even when the synthetic member is fully covered. Pinned by
+  `DisplayClassWithMismatchedFilenameYieldsNAnotFalsePass`. Attribution can only ADD real coverage to the
+  CORRECT method or fall to `N/A`; it can never fabricate a false pass.
+
+- **D-T23d — skip-guard INVERSION (ordering change only; `IsCompilerGeneratedMethod` UNCHANGED).**
+  `ReadClassMethods` now demangles a `b__`/`g__` member and COLLECTS it BEFORE the
+  `IsCompilerGeneratedMethod` skip predicate, so a recognized member is UNIONed into its source method
+  instead of dropped wholesale. The predicate body is untouched: Rule 1 (angle-bracket CLASS) is now
+  effectively dead on the real-class path (every angle-bracket class is routed to A or B upstream), and
+  Rule 2 (angle-bracket METHOD) now only catches a residual UNRECOGNIZED synthetic (neither `b__` nor
+  `g__`). This is what closes finding #3: a never-invoked local function `<Compute>g__Validate|0_0` @ 0%
+  now UNIONs onto `Compute` (CC 1 → CRAP 2.0) instead of being skipped to `N/A`.
+
+- **D-T23e — two residuals, both safe-by-construction to `N/A` (no Mr. Das decision needed).**
+  (1) **Nested-synthetic enclosing** — a lambda/local function nested inside another synthetic, whose
+  split enclosing still carries a `<>c...` segment, demangles to a `NormalizeTypeName` that never matches
+  a real Roslyn `TypeName`, so its key is unmatchable → safe `N/A`, never a mis-attribution.
+  (2) **Inherited D-T24g** — T23 keys carry the basename only, so the same-basename-different-directory
+  partial-class collision T24 accepted applies here too; judged rare, logged as a watch-item, revisit
+  only if a real target hits it.
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
@@ -819,6 +885,32 @@ departure number since #11); `NormalizeTypeName` and the frozen `TypeName` form 
     file's coverage instead of borrowing a sibling's. A C#-ecosystem correctness fix with no crap4java
     counterpart (Java has no partial classes). See the **T24 register** (D-T24a–g). (Ruled by Mr. Das:
     key format `TypeName#method#basename:line`.)
+
+13. **Compiler-generated member coverage attribution (C#-specific)** — generalizes departure #11
+    (which attributes only async/iterator `<Method>d__N` state machines) to **every** compiler-generated
+    member the C# compiler lowers off a source method: lambdas (`<M>b__N`, hosted on the `<>c` static
+    cache / `<>c__DisplayClassN` capturing closure), local functions (`<M>g__L|N`, hosted on the real
+    class or, when captured, a display class), and async-locals (`<<M>g__...>d__N` / `<<M>b__...>d__N` —
+    an async local function/lambda lowered onto its own state machine). crap4csharp DEMANGLES the source
+    method `M` from each member name (`^<([^<>]+)>[bg]__`; a user method never contains angle brackets),
+    ATTRIBUTES the member's own `<line>` coverage to
+    `NormalizeTypeName(enclosingType) + "#" + M + "#" + basename + ":" + line`, and **UNIONs** it into
+    that source method's coverage. Every physical source line belongs to exactly ONE coverlet `<method>`,
+    so the body's lines and the synthetic member's lines are DISJOINT and summing `(missed, covered)` is
+    a set union, never a double-count. Attribution is nearest-body (the same ordinal min-line scan
+    `CrapAnalyzer` already runs for overloads), so a member folds into ITS OWN same-file overload and
+    distinct overloads are never blended. A member `filename` that does not match the source method's
+    file yields an unmatchable key → the method stays per-method `N/A` (departure #1 family, D-T24d) — a
+    SAFE under-report, never a false pass. **Observable behavior:** never-invoked lambdas and local
+    functions now report their REAL (possibly 0%) coverage and CRAP instead of `N/A`, so they participate
+    in the exit-2 threshold gate (closes finding #3's false pass — a never-invoked local function now
+    scores CRAP 2.0 at CC 1 / 0% rather than escaping it). Analog of departure #2 (a C#-ecosystem
+    enrichment of the metric's inputs, faithful to crap4java's *intent* of scoring the human-authored
+    method). Supersedes departure #11's now-stale "lambdas/local functions remain skipped — finding #3
+    deferred" clause; #11's `d__N` async/iterator attribution is UNCHANGED — #13 only ADDS the other
+    member shapes. See the **T23 register** (D-T23a–e). (Ruled by Mr. Das: attribute ALL
+    compiler-generated members to `NormalizeTypeName(enclosing)#SourceMethod#basename:line`; nearest-body
+    union; safe-`N/A` on filename mismatch.)
 
 ## Cyclomatic complexity — authoritative node set
 

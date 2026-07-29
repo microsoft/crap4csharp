@@ -793,6 +793,188 @@ public class CrapAnalyzerTests
         nullPath.Should().Throw<ArgumentNullException>();
     }
 
+    // T23 (6.9) -- FINDING #3, end-to-end. A method Compute whose only lowered coverage is a never-invoked
+    // local function <Compute>g__Validate|0_0 (all unhit) now reports REAL 0% coverage instead of the
+    // pre-T23 N/A (skip). CC folds the local function so Compute is CC 1; CRAP = 1^2*(1-0)^3+1 = 2.0. The
+    // point: NOT N/A, NOT 100%/PASS -- the method now participates in the exit-2 gate.
+    [Fact]
+    public void AttributesNeverInvokedLocalFunctionSoCrapReflectsZeroCoverage()
+    {
+        const string source = """
+            namespace Demo;
+            class Calc
+            {
+                int Compute(int x)
+                {
+                    int Validate(int y) => y;
+                    return x;
+                }
+            }
+            """;
+
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Calc" filename="Calc.cs">
+                      <methods>
+                        <method name="&lt;Compute&gt;g__Validate|0_0" signature="(System.Int32)">
+                          <lines>
+                            <line number="6" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Calc.cs", source);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            MethodMetrics metric = result.Single(m => m.MethodName == "Compute");
+            metric.ClassName.Should().Be("Demo.Calc");
+            metric.Complexity.Should().Be(1);
+            metric.CoveragePercent.Should().NotBeNull();
+            metric.CoveragePercent!.Value.Should().BeApproximately(0.0, 1e-9);
+            metric.CrapScore.Should().NotBeNull();
+            metric.CrapScore!.Value.Should().BeApproximately(2.0, 1e-9);
+        });
+    }
+
+    // T23 (6.10) -- a covered capturing lambda's display-class member <Run>b__0 UNIONs onto its enclosing
+    // method Run, so Run resolves to REAL coverage. CC 2 (the `if`) @ 100% -> CRAP = 2^2*(1-1)^3+2 = 2.0.
+    [Fact]
+    public void AttributesLambdaCoverageToEnclosingMethod()
+    {
+        const string source = """
+            using System;
+            namespace Demo;
+            class Worker
+            {
+                int Run(int x)
+                {
+                    Func<int, int> f = n => n + x;
+                    if (x > 0)
+                    {
+                        return f(x);
+                    }
+                    return 0;
+                }
+            }
+            """;
+
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Worker" filename="Worker.cs">
+                      <methods>
+                        <method name="Run" signature="(System.Int32)">
+                          <lines>
+                            <line number="8" hits="1" />
+                            <line number="10" hits="1" />
+                            <line number="12" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                    <class name="Demo.Worker/&lt;&gt;c__DisplayClass0_0" filename="Worker.cs">
+                      <methods>
+                        <method name="&lt;Run&gt;b__0" signature="(System.Int32)">
+                          <lines>
+                            <line number="7" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Worker.cs", source);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            MethodMetrics metric = result.Single(m => m.MethodName == "Run");
+            metric.ClassName.Should().Be("Demo.Worker");
+            metric.Complexity.Should().Be(2);
+            metric.CoveragePercent.Should().NotBeNull();
+            metric.CoveragePercent!.Value.Should().BeApproximately(100.0, 1e-9);
+            metric.CrapScore.Should().NotBeNull();
+            metric.CrapScore!.Value.Should().BeApproximately(2.0, 1e-9);
+        });
+    }
+
+    // T23 (6.11) -- SAFETY PROPERTY (D-T24d family). A display class whose filename ("Other.cs") differs
+    // from the enclosing method's source file ("Calc.cs") produces an unmatchable key, so the covered
+    // lambda CANNOT attribute to Compute: the method stays N/A (null coverage + null CRAP) -- a SAFE
+    // under-report, NEVER a false pass, even though the synthetic member is fully covered.
+    [Fact]
+    public void DisplayClassWithMismatchedFilenameYieldsNAnotFalsePass()
+    {
+        const string source = """
+            using System;
+            namespace Demo;
+            class Calc
+            {
+                int Compute(int x)
+                {
+                    Func<int, int> f = n => n + x;
+                    return f(x);
+                }
+            }
+            """;
+
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Calc/&lt;&gt;c__DisplayClass0_0" filename="Other.cs">
+                      <methods>
+                        <method name="&lt;Compute&gt;b__0" signature="(System.Int32)">
+                          <lines>
+                            <line number="7" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Calc.cs", source);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            MethodMetrics metric = result.Single(m => m.MethodName == "Compute");
+            metric.CoveragePercent.Should().BeNull();
+            metric.CrapScore.Should().BeNull();
+        });
+    }
+
     private static void WithTempDir(Action<string> test)
     {
         string dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
