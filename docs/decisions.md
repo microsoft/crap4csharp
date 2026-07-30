@@ -508,7 +508,10 @@ the invariants.
   `TreatsMalformedExistingCandidateAsZeroReferencesAndResolvesValidSibling`.
 
 - **D-T17f — fail-fast triggers grow 2 → 4 (+1 span); new greppable anchors (departure #1; extends
-  D-T14b).** `Execute` now fail-fasts on **`No owning .csproj`**, **`span multiple projects`** (DECISION
+  D-T14b).** `Execute` now fail-fasts on **`has no owning project`** (T27: anchor re-tuned from the
+  original `No owning .csproj`, predicate generalized from all-files-unowned to ANY-file-unowned —
+  finding #2; it absorbs the old no-owner trigger, strictly stronger, no net-new trigger; see the T27
+  register D-T27a/b), **`span multiple projects`** (DECISION
   1), and **`No test project`** — all BEFORE any coverage run (assert the runner is not invoked) — then
   the two existing post-run triggers **`No coverage report was produced`** / **`contained no coverage
   data`**. The exit table (D-T14a) is structurally unchanged (0/1/2); resolution adds only new exit-1
@@ -716,6 +719,59 @@ departure #13 for the behavioral contract; this register records the design ruli
   (2) **Inherited D-T24g** — T23 keys carry the basename only, so the same-basename-different-directory
   partial-class collision T24 accepted applies here too; judged rare, logged as a watch-item, revisit
   only if a real target hits it.
+
+## T27 register — orphan/unowned-file fail-fast; folds into departure #1 (S10; Anders T27 review, 🟢)
+
+Resolved decisions for the S10 orphan fail-fast, closing capstone finding #2. Pre-T27, an analyzed `.cs`
+with **no owning `.csproj`** within bounds was dropped from the owner set yet still analyzed against a
+*surviving* project's coverage -> silent per-method `N/A` + exit 0 — the same silent cross-project
+misattribution the span fail-fast (#9, D-T17b) exists to prevent, resurfacing at per-FILE granularity
+below the project-span check. Mr. Das ruled **FAIL-FAST**: the resolver SURFACES the unowned files and
+`CliApplication.Execute` refuses **exit 1**. This adds **NO new departure number** and makes **NO**
+renumber of #1-#13 or edit to the exit table (D-T14a) — it realizes/extends **departure #1**'s fail-fast
+family and refines **departure #9**'s resolver output, the same fold-under-#1 precedent as **D-T22a**
+(the multi-report refusal). The ledger stays **#1-#13** (T27 is NOT #14; #14 remains reserved for the
+still-GATED T26 executable-member work).
+
+- **D-T27a — the resolver SURFACES unowned files; `Execute` OWNS the exit (extends #1, refines #9; no new
+  number). CA1034 top-level-type adaptation folded in.** `OwningProjectResolver.ResolveOwningProjects`
+  now returns `OwningProjectResolution(IReadOnlyList<string> OwningProjects, IReadOnlyList<string>
+  UnownedFiles)` instead of a bare owner list: owners stay **distinct + ordinal-sorted**, unowned files
+  are **preserved in upstream ordinal order** (the analyzed set is already distinct+sorted). The per-file
+  `ResolveOwningProject` is **UNCHANGED** (still `string?`); only the aggregate return grows the second
+  list. This mirrors the ratified surface-the-set / CLI-owns-the-exit seam (D-T17a, D-T22b): the resolver
+  reports, `Execute` decides per D-T14a. **CA1034 adaptation (Dave, flagged — Anders: in-lane, ✅):**
+  `OwningProjectResolution` is a **top-level `public readonly record struct`** in the resolver's file and
+  namespace (`Microsoft.Crap4CSharp`), NOT a nested type — nesting a public type trips **CA1034**
+  (do-not-nest-public-types) under warnings-as-errors. `public` is the correct least-privilege here
+  (golden rule #9 satisfied — same-assembly `CliApplication` and the test project consume it; an
+  `internal` DTO or a CA1034 suppression would both be worse); it is an immutable, invariant-free value
+  carrier with no equality reliance, so record-struct semantics are safe and the nesting bought nothing.
+
+- **D-T27b — anchor `has no owning project`, exit 1; the `count == 0` branch is now DEAD and removed;
+  out-of-root-file edge folded in.** `Execute` gains, at the EXACT slot the old `owningProjects.Count ==
+  0` branch occupied — **before** the span (`> 1`) check and **before** any coverage run (D-T17f pre-run
+  ordering preserved) — `if (resolution.UnownedFiles.Count > 0)` -> stderr + **exit 1**, message *"An
+  analyzed C# file has no owning project. These file(s) have no .csproj at or above them (searched up to
+  the invocation root '{_projectRoot}'): {join}. Ensure every analyzed file lives inside a C# project."*
+  Greppable anchor **`has no owning project`** (re-tuned from the old `No owning .csproj`; tests pin the
+  substring, so wording stays free — D-T17f license); the message now NAMES the offending file(s), a
+  diagnosis improvement over the old blanket text. The old `owningProjects.Count == 0` branch is
+  **REMOVED as unreachable**: `OwningProjects` is empty IFF every analyzed file is unowned, which is a
+  strict SUBSET of "any file unowned" and is therefore already caught by the earlier orphan gate (the
+  empty-file-set case exits upstream), guaranteeing `OwningProjects` is non-empty past the gate and
+  `owningProjects[0]` is safe. The new predicate is **strictly stronger** — the old branch fired only
+  when ALL files were unowned, the new one fires when ANY file is — so the orphan gate **absorbs** the
+  old no-owner trigger: one trigger generalized, **no net-new trigger** (D-T17f's "2 -> 4" count is
+  unchanged). **Out-of-root-file edge (flagged):** a file OUTSIDE `_projectRoot` resolves to a null owner
+  (`ResolveOwningProject`'s `IsWithin` bound returns null) -> surfaced as UNOWNED -> the same fail-fast,
+  so a mixed run of in-root-owned + out-of-root files now refuses deterministically instead of dropping
+  the stray file and scoring it all-`N/A`. No exit-table change (D-T14a 0/1/2 intact; a generalized
+  exit-1 reason only). **Tests:** `ResolveOwningProjectsIgnoresFilesWithoutOwner` INVERTS to
+  `ResolveOwningProjectsSurfacesFilesWithoutOwner` (asserts one owner AND one unowned); sibling resolver
+  tests read `result.OwningProjects` and assert `UnownedFiles` empty; a new CLI
+  `FailsFastWhenSomeFilesHaveNoOwningProject` (mixed owned + orphan -> exit 1, anchor + orphan filename on
+  stderr, coverage runner NOT invoked). Bhaskar: build 0/0 Release, 156/156 green, exit-matrix intact.
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 

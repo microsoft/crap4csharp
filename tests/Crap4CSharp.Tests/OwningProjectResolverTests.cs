@@ -182,9 +182,10 @@ public class OwningProjectResolverTests
             string a = Touch(root, "a.cs");
             string c = Touch(SubDir(root, "b"), "c.cs");
 
-            IReadOnlyList<string> result = OwningProjectResolver.ResolveOwningProjects([a, c], root);
+            OwningProjectResolution result = OwningProjectResolver.ResolveOwningProjects([a, c], root);
 
-            result.Should().ContainSingle().Which.Should().Be(project);
+            result.OwningProjects.Should().ContainSingle().Which.Should().Be(project);
+            result.UnownedFiles.Should().BeEmpty();
         });
     }
 
@@ -198,15 +199,16 @@ public class OwningProjectResolverTests
             string x = Touch(SubDir(root, "projA"), "x.cs");
             string y = Touch(SubDir(root, "projB"), "y.cs");
 
-            IReadOnlyList<string> result = OwningProjectResolver.ResolveOwningProjects([y, x], root);
+            OwningProjectResolution result = OwningProjectResolver.ResolveOwningProjects([y, x], root);
 
-            result.Should().Equal(
+            result.OwningProjects.Should().Equal(
                 new[] { projA, projB }.OrderBy(p => p, StringComparer.Ordinal));
+            result.UnownedFiles.Should().BeEmpty();
         });
     }
 
     [Fact]
-    public void ResolveOwningProjectsIgnoresFilesWithoutOwner()
+    public void ResolveOwningProjectsSurfacesFilesWithoutOwner()
     {
         WithTempRoot(root =>
         {
@@ -214,9 +216,10 @@ public class OwningProjectResolverTests
             string owned = Touch(SubDir(root, "proj"), "owned.cs");
             string orphan = Touch(SubDir(root, "noproj"), "orphan.cs");
 
-            IReadOnlyList<string> result = OwningProjectResolver.ResolveOwningProjects([owned, orphan], root);
+            OwningProjectResolution result = OwningProjectResolver.ResolveOwningProjects([owned, orphan], root);
 
-            result.Should().ContainSingle().Which.Should().Be(project);
+            result.OwningProjects.Should().ContainSingle().Which.Should().Be(project);
+            result.UnownedFiles.Should().ContainSingle().Which.Should().Be(orphan);
         });
     }
 

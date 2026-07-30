@@ -407,7 +407,32 @@ public class CliApplicationTests
             int exit = app.Execute([]);
 
             exit.Should().Be(1);
-            error.ToString().Should().Contain("No owning .csproj");
+            error.ToString().Should().Contain("has no owning project");
+            fake.Directories.Should().BeEmpty();
+        });
+    }
+
+    // 18b -- NEW (finding #2 regression guard): a MIXED set -- one owned source plus a loose orphan with no
+    // owning .csproj -- previously dropped the orphan yet analyzed against the surviving project's coverage
+    // (silent N/A, exit 0). Now the unowned file trips the fail-fast -> exit 1, stderr names the orphan; the
+    // runner is NEVER invoked (resolution fail-fasts before coverage).
+    [Fact]
+    public void FailsFastWhenSomeFilesHaveNoOwningProject()
+    {
+        WithTempRoot(root =>
+        {
+            string ownedSource = ScaffoldModule(root, "Foo", "A.cs", AlphaSampleSource);
+            string orphanPath = WriteFile(root, Path.Combine("loose", "Orphan.cs"), AlphaSampleSource);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            FakeExecutor fake = new(0, Alpha75Xml);
+            CliApplication app = new(root, output, error, new CoverageRunner(fake));
+
+            int exit = app.Execute([ownedSource, orphanPath]);
+
+            exit.Should().Be(1);
+            error.ToString().Should().Contain("has no owning project");
+            error.ToString().Should().Contain("Orphan.cs");
             fake.Directories.Should().BeEmpty();
         });
     }

@@ -1,5 +1,12 @@
 namespace Microsoft.Crap4CSharp;
 
+// Outcome of OwningProjectResolver.ResolveOwningProjects: the distinct ordinal-sorted owning-project .csproj
+// paths, plus the analyzed files that have no owning .csproj within bounds. UnownedFiles non-empty => any
+// analyzed file is unowned, so CliApplication.Execute fail-fasts (finding #2; departure #1 fail-fast family).
+public readonly record struct OwningProjectResolution(
+    IReadOnlyList<string> OwningProjects,
+    IReadOnlyList<string> UnownedFiles);
+
 // Model B (departure #9) replacement for the retired ModuleRootResolver. Where the Java original resolved a
 // Maven MODULE ROOT via an upward pom.xml walk, and the retired resolver returned a ".sln"/".csproj" directory
 // via an UNBOUNDED walk (departure #6, now superseded), this type returns the nearest OWNING PROJECT -- the
@@ -13,12 +20,14 @@ namespace Microsoft.Crap4CSharp;
 // determinism); all path comparisons are post-Path.GetFullPath from the same on-disk casing, so Ordinal is safe.
 //
 // There is NO start-directory fallback (departure #6's B1 fallback is gone): a directory that is not a project
-// is not an "owning project". No owner within bounds => the file contributes nothing; if NO analyzed file has
-// an owner, CliApplication.Execute fail-fasts (departure #1, exit 1).
+// is not an "owning project". No owner within bounds => the file is surfaced as UNOWNED in the result; when ANY
+// analyzed file is unowned, CliApplication.Execute fail-fasts (finding #2; departure #1 fail-fast family, exit 1)
+// rather than silently dropping it and misattributing all-N/A metrics.
 public static class OwningProjectResolver
 {
-    // Distinct owning-project .csproj paths (ordinal-sorted) for the analyzed files. Empty => none within bounds.
-    public static IReadOnlyList<string> ResolveOwningProjects(
+    // Owner resolution for the analyzed files: distinct ordinal-sorted owning-project .csproj paths plus any
+    // files with no owner within bounds. OwningProjects empty => none within bounds.
+    public static OwningProjectResolution ResolveOwningProjects(
         IReadOnlyList<string> files, string invocationRoot)
     {
         ArgumentNullException.ThrowIfNull(files);
@@ -26,6 +35,7 @@ public static class OwningProjectResolver
 
         string root = Path.GetFullPath(invocationRoot);
         HashSet<string> owners = new(StringComparer.Ordinal);
+        List<string> unowned = [];
         foreach (string file in files)
         {
             string? owner = ResolveOwningProject(file, root);
@@ -33,9 +43,15 @@ public static class OwningProjectResolver
             {
                 owners.Add(owner);
             }
+            else
+            {
+                unowned.Add(file); // preserves upstream ordinal order (files already distinct+sorted)
+            }
         }
 
-        return [.. owners.OrderBy(p => p, StringComparer.Ordinal)];
+        return new OwningProjectResolution(
+            [.. owners.OrderBy(p => p, StringComparer.Ordinal)],
+            unowned);
     }
 
     // Nearest .csproj at/above `startPath`, bounded so the walk never leaves the invocationRoot subtree.

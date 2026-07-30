@@ -64,13 +64,19 @@ public sealed class CliApplication
 
         // Resolve the ONE owning project for the analyzed files (departure #7 resolve-once; #9 Model B),
         // bounded so the walk never climbs above the invocation root _projectRoot.
-        IReadOnlyList<string> owningProjects =
+        OwningProjectResolution resolution =
             OwningProjectResolver.ResolveOwningProjects(filesToAnalyze, _projectRoot);
-        if (owningProjects.Count == 0)
+
+        // FAIL-FAST (finding #2; departure #1 fail-fast family): any analyzed file with no owning .csproj.
+        // Previously such a file was dropped from the owner set yet still analyzed against the surviving
+        // project's coverage -> silent N/A + exit 0 (misattribution). Refuse deterministically.
+        if (resolution.UnownedFiles.Count > 0)
         {
-            _error.WriteLine($"No owning .csproj was found at or above the analyzed C# files (searched up to the invocation root '{_projectRoot}'). Ensure the target sources live inside a C# project.");
+            _error.WriteLine($"An analyzed C# file has no owning project. These file(s) have no .csproj at or above them (searched up to the invocation root '{_projectRoot}'): {string.Join(", ", resolution.UnownedFiles)}. Ensure every analyzed file lives inside a C# project.");
             return 1;
         }
+
+        IReadOnlyList<string> owningProjects = resolution.OwningProjects;
 
         if (owningProjects.Count > 1)
         {
