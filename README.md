@@ -142,6 +142,8 @@ dotnet run --project src/Crap4CSharp -c Release -- project-a project-b
   executable lines on its compiler-generated state machine (`<Method>d__N`), not on the method itself.
   crap4csharp attributes that state machine's `MoveNext` coverage back to the source method, so a
   **tested** async/iterator method reports its real coverage and CRAP (and can trip the exit-2 gate)
-  instead of `N/A`. **Known gap:** lambda bodies and local functions hosted on compiler-generated
-  display classes are not yet attributed.
+  instead of `N/A`. **Lambdas & local functions too:** coverage the compiler hosts on display classes
+  — lambda bodies (`<Method>b__N`), local functions (`<Method>g__L|N`) and async locals — is likewise
+  folded back into the enclosing source method, so an untested lambda or local function drags its
+  method's real coverage and CRAP down instead of letting the method escape the exit-2 gate.
 - Report output is sorted by CRAP descending, with `N/A` at the bottom.
