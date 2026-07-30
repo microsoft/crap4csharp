@@ -143,6 +143,10 @@ counters (departure #4). **No new behavioral departure beyond the already-approv
 - **W-T10b — `get_`/`set_`/`add_`/`remove_` prefix-skip false-positive (rule 3).** A user method
   literally named `get_Foo` (with an underscore) would be wrongly skipped → `N/A`. Negligible
   probability; sanctioned by W-T9b. Logged.
+- **W-T10b — RETIRED at T26 (append-only).** Departure #14 DELETES the `get_`/`set_`/`add_`/`remove_`
+  Rule-3 accessor skip entirely (D-T26d), so nothing is skipped by name prefix anymore — a user method
+  literally named `get_Foo` now emits like any other member. The false-positive this watch-item tracked
+  can no longer occur. See the **T26 register** (D-T26a–g) and **departure #14**.
 - **W-T10c — synthetic-`MoveNext` skip via containing class (ACCEPTED, ratified).** The skip predicate
   does **not** blanket-skip `MoveNext` by name; a synthetic `MoveNext` is caught by its angle-bracket
   state-machine class (rule 1), while a user-authored `IEnumerator.MoveNext` on a real class is kept and
@@ -583,6 +587,13 @@ the design rulings.
   coverage IS attributed and UNIONed into its source method — its earlier SKIP behavior INVERTS to
   attribution. Departure #11's `d__N` async/iterator behavior is UNCHANGED; #13 only ADDS the other
   member shapes (no edit to #11's prose). See the **T23 register** (D-T23a–e) and **departure #13**.
+- **D-T21e — UNAFFECTED by T26 (append-only clarifier).** Departure #14 deletes the coverage-parser
+  Rule-3 ACCESSOR skip (D-T26d), NOT anything on the `<…>`-synthetic path: lambdas (`<M>b__N`), local
+  functions (`<M>g__L|N`) and async-locals still route through the `^<([^<>]+)>[bg]__` demangler and
+  UNION into their enclosing source method exactly as #13 established (a `get_`/`op_`/`add_` name never
+  begins with `<`). An accessor/operator body that CONTAINS a lambda/local function still emits ONE
+  descriptor for the member and attributes the inner synthetic via #13 — no double-count, no regression.
+  See the **T26 register** (D-T26a–g) and **departure #14**.
 
 ## T22 register — locator surfaces all reports; multi-report refusal folds into departure #1
 
@@ -772,6 +783,101 @@ still-GATED T26 executable-member work).
   tests read `result.OwningProjects` and assert `UnownedFiles` empty; a new CLI
   `FailsFastWhenSomeFilesHaveNoOwningProject` (mixed owned + orphan -> exit 1, anchor + orphan filename on
   stderr, coverage runner NOT invoked). Bhaskar: build 0/0 Release, 156/156 green, exit-matrix intact.
+
+## T26 register — executable-member decomposition; adds departure #14 (S10 capstone; Anders T26 review, 🟢)
+
+Resolved decisions for the S10 capstone member-decomposition task, closing capstone finding #3: the T9
+parser (`CSharpMethodParser`) emitted descriptors ONLY for `MethodDeclarationSyntax`, so every other
+logic-bearing member — property/indexer accessors, user-defined operators, conversions, finalizers,
+custom event accessors — got no metric row and silently escaped the exit-2 gate. Mr. Das ruled **MAXIMAL
+scope** (Scope B + both extras: finalizers + custom event accessors) with **b-1 CLR-name passthrough**
+keying. Adds **departure #14** (same class as #2/#11/#13); the frozen `TypeName#method#basename:line` key
+and `NormalizeTypeName` are **UNCHANGED** and no exit-table row (D-T14a) moves. See departure #14 for the
+behavioral contract; this register records the design rulings. Bhaskar: build 0/0 Release, 172/172 green,
+frozen key byte-identical, exit-matrix + T21/T23 attribution untouched.
+
+- **D-T26a — MAXIMAL member set; single document-order switch (RULED).** The emitted set = property/
+  indexer accessors, user-defined operators, conversion operators, finalizers, and custom event
+  accessors; **constructors OUT** (crap4java §8.1); **bodyless SKIP**. `Parse` replaces the single
+  `OfType<MethodDeclarationSyntax>()` loop with ONE `root.DescendantNodes()` `switch` that handles each
+  member kind at its own node visit, preserving document (depth-first pre-order) order — the ordered
+  parser oracles depend on it. Accessors are emitted when their parent property/indexer/event node is
+  visited: there is **no** `case AccessorDeclarationSyntax` and **no** `case EventFieldDeclarationSyntax`
+  (either would double-count accessors / wrongly collect compiler-generated field-like-event add/remove).
+  No member nests inside a method body, so nothing is revisited; a lambda/local function inside a member
+  body is descended into and counted into that member's CC (departure #2, unchanged) and NEVER separately
+  emitted — it stays the exclusive province of T23 coverage attribution (#13). No double-count, no
+  overlap.
+
+- **D-T26b — b-1 CLR-name passthrough; `TypeNameOf` widened (RULED).** `MethodDescriptor.Name` carries the
+  **CLR method name** (`get_`/`set_`/`init`→`set_`/`add_`/`remove_`/`op_*`/`Finalize`) and is used in BOTH
+  roles unchanged: the report `Method` column prints it, and the coverage-key `method` token IS it. An
+  `init` accessor emits `set_<Id>` (init-only setters lower to a CLR `set_` method, which coverlet emits).
+  The frozen key and `NormalizeTypeName` are untouched; `TypeNameOf` widens its parameter
+  `MethodDeclarationSyntax`→`SyntaxNode` ONLY — the arity/nesting/global-namespace body is byte-identical,
+  so the five pinned `TypeName` forms still hold (an accessor node's `.Ancestors()` walks past the
+  accessor/property to the same enclosing type chain). Mr. Das accepted the CLR form in the report column.
+
+- **D-T26c — body rules (RULED).** Block body → `ComplexityWalker.Count(Body)`; `=> e` →
+  `Count(ExpressionBody)`; an expression-bodied property/indexer emits exactly ONE `get_<Id>`/`get_Item`
+  row. Accessor StartLine is the **accessor's own** location, not the parent property's, so CLR-name
+  families that legitimately repeat (two indexers → two `get_Item`; separated same-target conversions)
+  stay nearest-line-disambiguable against coverlet's per-accessor `minChildLine`; single-row members use
+  the member's decl start, matching the existing method path (decl start, body end). `ComplexityWalker`
+  is **untouched**.
+
+- **D-T26d — Rule-3 inversion (RULED); retires W-T10b.** `IsCompilerGeneratedMethod`'s
+  `get_`/`set_`/`add_`/`remove_` accessor skip (old Rule 3) is DELETED; the constructor skip is kept and
+  relabeled Rule 3 (`.ctor`/`.cctor` still excluded). `op_*` (all operators + `op_Implicit`/`op_Explicit`)
+  and `Finalize` NEVER matched any skip rule, so they already flowed through `ReadClassMethods` — T26 adds
+  NO special case for them, only the matching parser descriptors. No collision with the T23 `<…>`
+  synthetic routing (none of `get_Foo`/`op_Addition`/`Finalize`/`add_Evt` begins with `<`, so the
+  `^<([^<>]+)>[bg]__` demangler and the A/B state-machine/display-class routing are byte-for-byte intact).
+  Harmless new orphans appear (auto-property `get_`/`set_`, field-like-event `add_`/`remove_` —
+  compiler-generated bodies coverlet may emit with NO matching descriptor); each name is unique per type,
+  so an orphan can never be mis-attributed. **Retires watch-item W-T10b** (a user method literally named
+  `get_Foo` can no longer be wrongly skipped — nothing is skipped by accessor prefix anymore).
+
+- **D-T26e — `op_UnsignedRightShift` INCLUDED; `op_Checked*` DEFERRED via skip (Anders design call,
+  delegated).** `>>>` is one trivial, unambiguous token→name row
+  (`GreaterThanGreaterThanGreaterThanToken` → `op_UnsignedRightShift`), included. A declaration whose
+  `CheckedKeyword` is present emits NO descriptor (the operator/conversion cases guard on it). Rationale:
+  C# requires every checked operator to be declared alongside its non-checked sibling, which IS scored, so
+  the operator KIND is covered; emitting the base name for the checked form would put two same-CLR-name
+  descriptors (`op_Addition` checked + unchecked) on one type and let nearest-line borrow the unchecked
+  entry's coverage → a genuine false pass. Skipping the checked declaration removes that risk (its coverlet
+  `op_Checked*` entry simply goes unused) and avoids depending on an `op_Checked*` spelling not
+  compile-verifiable at design time. Reversible upgrade path recorded (a checked-name transform over the
+  eligible set). This is the sub-decision Mr. Das delegated ("include or explicitly defer — your call, but
+  state it"): **stated — `>>>` in, `checked` out (skip), upgradeable.**
+
+- **D-T26f — safe residuals (documented; NO product choice, no Mr. Das decision needed).** (1) An
+  `[IndexerName("X")]`-renamed indexer emits parser `get_Item` while coverlet emits `get_X` → key mismatch
+  → deterministic per-member `N/A`, never a false pass. (2) Explicit-interface members inherit the existing
+  D-T21c `N/A` residual. (3) Genuinely-adjacent same-CLR-name conversions/indexers rely on basename +
+  nearest-line and inherit the ACCEPTED overload-adjacency residual (D-T21c/D-T24g) — a best-effort
+  cross-attribution WITHIN one CLR-name family, never a false pass across DISTINCT members. Inherits
+  D-T24g (same-basename-different-directory). Phrasing precision (Anders §8, non-blocking): a "two
+  same-CLR-name conversions → deterministic N/A" is not naturally producible (nearest-line always matches
+  something within the name family), so the deterministic safe-`N/A` residual is pinned via the
+  `[IndexerName]` edge (test A3) and the separated case is proven to resolve correctly (test A2). A
+  GUARANTEED `N/A` for adjacent same-name conversions (detect-and-force rather than best-effort) would be a
+  NEW product choice — none taken; proceeding on the safe inherited residual per Mr. Das's "otherwise
+  proceed."
+
+- **D-T26g — test + style consequences.** Two coverage-parser skip tests are reshaped for the Rule-3
+  inversion: `SkipsCompilerGeneratedAndAccessorMethods` → asserts `get_Value`/`set_Value`/`Real` present +
+  `.ctor` absent (`HaveCount(3)`); `MatchesRealCoverletSampleClassNames` drops `get_` from its `NotContain`
+  predicate and ADDS the expected `get_Item`/`get_Prop` keys. New tests: parser P1–P11 (+P5b) pin
+  accessor/operator/conversion/finalizer/event descriptor emission + CC oracles and the bodyless skips;
+  coverage C1 pins the accessor/operator/finalizer/event entries emit while `.ctor` stays skipped; analyzer
+  A1–A3 pin the end-to-end `get_`/`op_` round-trip, separated same-name resolution, and the `[IndexerName]`
+  safe-`N/A`. No crap4java parity break (crap4java is method-only; a knowing C#-breadth departure, not a
+  fidelity regression). **Two style-only deviations from the contract's illustrative C# (behavior
+  identical, ✅):** the `ConversionOperatorDeclarationSyntax` case computes the name into a `string
+  convName` local before calling `Emit(...)` (SA1117, vs the contract's inline ternary 4th arg), and the
+  two new test files omit the blank line between the T26 header comment and `[Fact]` (SA1512/SA1513). Pure
+  formatting; Bhaskar re-derived every oracle independently and matched.
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
@@ -967,6 +1073,33 @@ still-GATED T26 executable-member work).
     member shapes. See the **T23 register** (D-T23a–e). (Ruled by Mr. Das: attribute ALL
     compiler-generated members to `NormalizeTypeName(enclosing)#SourceMethod#basename:line`; nearest-body
     union; safe-`N/A` on filename mismatch.)
+
+14. **Full executable-member decomposition (C#-ecosystem breadth; no crap4java analog)** — the T9
+    parser (`CSharpMethodParser`), previously `MethodDeclarationSyntax`-only, now also emits descriptors
+    + augmented CC + coverage attribution for **every logic-bearing member with a body**: property/
+    indexer accessors (`get_`/`set_`/`init`→`set_`), user-defined operators (`op_*`, incl. C#-11
+    `op_UnsignedRightShift`), conversion operators (`op_Implicit`/`op_Explicit`), finalizers (`~T` → CLR
+    `Finalize`), and custom event accessors (`add_`/`remove_`). Keying is **CLR-name passthrough (b-1)**:
+    the descriptor `Name` IS the CLR method name, used as BOTH the report `Method` column and the
+    coverage-key `method` token (`init` accessors emit `set_<Id>`). Bodyless members are SKIPPED
+    (auto/abstract accessors, field-like/auto event accessors, static-abstract/partial-defining
+    operators). **Constructors stay excluded** (crap4java §8.1, unchanged). Coverage-side: the
+    `IsCompilerGeneratedMethod` Rule-3 accessor skip is DELETED so `get_`/`set_`/`add_`/`remove_` entries
+    emit like ordinary methods (`op_*`/`Finalize` already flowed through — no skip rule ever matched
+    them); the frozen `TypeName#method#basename:line` key and `NormalizeTypeName` are **unchanged**, and
+    `TypeNameOf` only widens its parameter `MethodDeclarationSyntax`→`SyntaxNode` with byte-identical
+    output. Same class as departures #2/#11/#13 (a C#-ecosystem enrichment faithful to crap4java's
+    *intent* of scoring human-authored logic), NOT a crap4java parity break (crap4java is method-only by
+    construction). **Deferred/skipped:** C#-11 `op_Checked*` variants are SKIPPED — every checked
+    operator must be declared alongside its non-checked sibling, which IS scored, so the operator KIND is
+    covered; emitting the base name for the checked form would collide two same-CLR-name descriptors and
+    risk a false pass (Anders design call under Mr. Das's delegation; reversible upgrade path recorded).
+    **Documented safe residuals (never a false pass across DISTINCT members):** (a) same-CLR-name
+    conversions/indexers rely on basename + nearest-line and inherit the accepted overload-adjacency
+    residual (D-T21c/D-T24g); (b) `[IndexerName]`-renamed indexers and explicit-interface members whose
+    CLR name does not match the coverage entry degrade to per-member `N/A`. See the **T26 register**
+    (D-T26a–g). (Ruled by Mr. Das: MAXIMAL scope + both extras — finalizers + custom event accessors;
+    b-1 CLR-name keying; edges = documented safe-`N/A`.)
 
 ## Cyclomatic complexity — authoritative node set
 

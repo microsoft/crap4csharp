@@ -9,16 +9,17 @@ a C# port of its Java sibling **crap4java**.
 
 `crap4csharp` is a standalone CRAP metric tool for C# projects, modeled after `crap4java`.
 
-It combines method cyclomatic complexity with Coverlet (Cobertura) method coverage and reports CRAP
-scores. On each run it deletes stale coverage artifacts, runs coverage, then analyzes the selected
-files.
+It combines the cyclomatic complexity of each logic-bearing member — methods, property/indexer
+accessors, operators, conversions, finalizers, custom event accessors — with Coverlet (Cobertura)
+per-member coverage and reports CRAP scores. On each run it deletes stale coverage artifacts, runs
+coverage, then analyzes the selected files.
 
 ## Formula
 
 `CRAP = CC^2 * (1 - coverage)^3 + CC`
 
-- `CC` is cyclomatic complexity.
-- `coverage` is method coverage fraction from Cobertura line counters (the .NET analog of JaCoCo
+- `CC` is cyclomatic complexity, computed per logic-bearing member.
+- `coverage` is that member's coverage fraction from Cobertura line counters (the .NET analog of JaCoCo
   `INSTRUCTION` counters).
 
 ## Module & Test Resolution
@@ -131,7 +132,7 @@ dotnet run --project src/Crap4CSharp -c Release -- project-a project-b
 ## Notes
 
 - **Fail fast:** if a module runs no tests or produces no coverage, `crap4csharp` exits non-zero
-  rather than continuing — a deliberate, stricter departure from `crap4java`. A method simply absent
+  rather than continuing — a deliberate, stricter departure from `crap4java`. A member simply absent
   from an otherwise-populated report is still reported as `N/A`.
 - **One owning project, one report:** crap4csharp resolves a single owning `.csproj` and its single
   `<Project>.Tests`/`.UnitTests` project, so `dotnet test --collect` emits **exactly one**
@@ -146,4 +147,12 @@ dotnet run --project src/Crap4CSharp -c Release -- project-a project-b
   — lambda bodies (`<Method>b__N`), local functions (`<Method>g__L|N`) and async locals — is likewise
   folded back into the enclosing source method, so an untested lambda or local function drags its
   method's real coverage and CRAP down instead of letting the method escape the exit-2 gate.
+- **Executable-member decomposition:** logic-bearing members beyond plain methods each get their own
+  CC/coverage/CRAP row under their **CLR name** — property/indexer accessors
+  (`get_Value`/`set_Value`/`get_Item`), user-defined operators (`op_Addition`, `op_UnsignedRightShift`),
+  conversions (`op_Implicit`/`op_Explicit`), finalizers (`~T` → `Finalize`) and custom event accessors
+  (`add_Evt`/`remove_Evt`). Bodyless members carry no row (auto-properties, abstract/`get;set;`
+  accessors, field-like events); **constructors stay excluded** (crap4java §8.1). A renamed indexer
+  (`[IndexerName]`) or explicit-interface member whose CLR name does not match its coverage entry
+  degrades to a safe per-member `N/A`, never a false pass.
 - Report output is sorted by CRAP descending, with `N/A` at the bottom.

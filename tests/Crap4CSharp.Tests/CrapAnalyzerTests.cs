@@ -975,6 +975,210 @@ public class CrapAnalyzerTests
         });
     }
 
+    // T26 (departure #14): executable-member decomposition, end-to-end. Accessors and operators now
+    // round-trip through the frozen reciprocal key under their CLR names (get_/op_), and a renamed
+    // indexer degrades to a safe N/A -- never a false pass.
+    //
+    // A1 -- the real get_/op_ round-trip. get_Value resolves to its OWN 100% entry (exact line -> CRAP
+    // 1.0); op_Addition resolves by nearest line to its OWN 0% entry (CRAP = 1^2*(1-0)^3+1 = 2.0).
+    [Fact]
+    public void MapsAccessorAndOperatorCoverageToTheirDescriptors()
+    {
+        const string source = """
+            namespace Demo;
+            class Widget
+            {
+                int _v;
+                int Value
+                {
+                    get { return _v; }
+                }
+                public static Widget operator +(Widget a, Widget b)
+                {
+                    return new Widget();
+                }
+            }
+            """;
+
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Widget" filename="Widget.cs">
+                      <methods>
+                        <method name="get_Value" signature="()">
+                          <lines>
+                            <line number="7" hits="1" />
+                          </lines>
+                        </method>
+                        <method name="op_Addition" signature="(Demo.Widget,Demo.Widget)">
+                          <lines>
+                            <line number="11" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Widget.cs", source);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            MethodMetrics getter = result.Single(m => m.MethodName == "get_Value");
+            getter.ClassName.Should().Be("Demo.Widget");
+            getter.Complexity.Should().Be(1);
+            getter.CoveragePercent.Should().NotBeNull();
+            getter.CoveragePercent!.Value.Should().BeApproximately(100.0, 1e-9);
+            getter.CrapScore!.Value.Should().BeApproximately(1.0, 1e-9);
+
+            MethodMetrics op = result.Single(m => m.MethodName == "op_Addition");
+            op.ClassName.Should().Be("Demo.Widget");
+            op.Complexity.Should().Be(1);
+            op.CoveragePercent.Should().NotBeNull();
+            op.CoveragePercent!.Value.Should().BeApproximately(0.0, 1e-9);
+            op.CrapScore!.Value.Should().BeApproximately(2.0, 1e-9);
+        });
+    }
+
+    // A2 -- two well-separated implicit conversions collide by CLR name (op_Implicit) but resolve
+    // INDEPENDENTLY: each StartLine's nearest coverage entry is its OWN body. conv#1 (CC 1) -> 100% ->
+    // CRAP 1.0; conv#2 (CC 2, the `if`) -> 0% -> CRAP = 2^2*(1-0)^3+2 = 6.0. Complexity pins file->metric.
+    [Fact]
+    public void ResolvesSeparatedSameNameImplicitConversionsIndependently()
+    {
+        const string source = """
+            namespace Demo;
+            struct Money
+            {
+                long _v;
+                public static implicit operator int(Money m)
+                {
+                    return (int)m._v;
+                }
+
+                public static implicit operator long(Money m)
+                {
+                    if (m._v > 0)
+                    {
+                        return m._v;
+                    }
+                    return 0;
+                }
+            }
+            """;
+
+        // conv#1 body min-line 7 hit -> 100%; conv#2 body min-line 12 unhit -> 0%. StartLines 5 and 10
+        // resolve to the nearest (7 and 12 respectively), so neither borrows the other's entry.
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Money" filename="Money.cs">
+                      <methods>
+                        <method name="op_Implicit" signature="(Demo.Money)">
+                          <lines>
+                            <line number="7" hits="1" />
+                          </lines>
+                        </method>
+                        <method name="op_Implicit" signature="(Demo.Money)">
+                          <lines>
+                            <line number="12" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Money.cs", source);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            result.Should().HaveCount(2);
+
+            MethodMetrics first = result.Single(m => m.Complexity == 1);
+            first.MethodName.Should().Be("op_Implicit");
+            first.CoveragePercent!.Value.Should().BeApproximately(100.0, 1e-9);
+            first.CrapScore!.Value.Should().BeApproximately(1.0, 1e-9);
+
+            MethodMetrics second = result.Single(m => m.Complexity == 2);
+            second.MethodName.Should().Be("op_Implicit");
+            second.CoveragePercent!.Value.Should().BeApproximately(0.0, 1e-9);
+            second.CrapScore!.Value.Should().BeApproximately(6.0, 1e-9);
+        });
+    }
+
+    // A3 -- a [IndexerName]-renamed indexer: the parser emits get_Item (the default CLR indexer name),
+    // but coverlet emits get_Element (the renamed CLR name). The keys never align, so the metric
+    // degrades to a deterministic SAFE N/A (null coverage + null CRAP) -- never a false pass.
+    [Fact]
+    public void RenamedIndexerDegradesToSafeNA()
+    {
+        const string source = """
+            namespace Demo;
+            class Bag
+            {
+                int[] _data;
+                [System.Runtime.CompilerServices.IndexerName("Element")]
+                public int this[int i]
+                {
+                    get { return _data[i]; }
+                }
+            }
+            """;
+
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Bag" filename="Bag.cs">
+                      <methods>
+                        <method name="get_Element" signature="(System.Int32)">
+                          <lines>
+                            <line number="8" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Bag.cs", source);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            MethodMetrics metric = result.Single(m => m.MethodName == "get_Item");
+            metric.ClassName.Should().Be("Demo.Bag");
+            metric.CoveragePercent.Should().BeNull();
+            metric.CrapScore.Should().BeNull();
+        });
+    }
+
     private static void WithTempDir(Action<string> test)
     {
         string dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

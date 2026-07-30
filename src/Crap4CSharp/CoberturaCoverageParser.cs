@@ -164,17 +164,7 @@ public static partial class CoberturaCoverageParser
             return true;
         }
 
-        // Rule 3: property/event accessors -- T9 never emits these (they are accessor declarations, not
-        // method declarations).
-        if (methodName.StartsWith("get_", StringComparison.Ordinal)
-            || methodName.StartsWith("set_", StringComparison.Ordinal)
-            || methodName.StartsWith("add_", StringComparison.Ordinal)
-            || methodName.StartsWith("remove_", StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        // Rule 4: instance/static constructors -- T9 excludes constructors.
+        // Rule 3: instance/static constructors -- T9 excludes constructors.
         return methodName is ".ctor" or ".cctor";
     }
 

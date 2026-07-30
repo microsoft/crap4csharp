@@ -526,4 +526,248 @@ public class CSharpMethodParserTests
 
         methods.Should().Equal(new MethodDescriptor("M", 3, 26, 2, "Sample"));
     }
+
+    // T26 (departure #14): executable-member decomposition. The parser now emits a descriptor for every
+    // logic-bearing member with a body -- property/indexer accessors, operators, conversions, finalizers
+    // and custom event accessors -- under its CLR method name, keeping document (source) order across
+    // member kinds. Bodyless members (auto/abstract accessors, field-like events) get no row; constructors
+    // stay excluded. Accessor StartLine is the accessor's OWN decl line (the nearest-line disambiguator).
+    [Fact]
+    public void EmitsBlockPropertyAccessorsAsGetAndSetRows()
+    {
+        string source = """
+            class Sample
+            {
+                int _v;
+                int Value
+                {
+                    get { return _v; }
+                    set { if (value > 0) { _v = value; } }
+                }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("get_Value", 6, 6, 1, "Sample"),
+            new MethodDescriptor("set_Value", 7, 7, 2, "Sample"));
+    }
+
+    [Fact]
+    public void EmitsExpressionBodiedAccessorsAsSeparateRows()
+    {
+        string source = """
+            class Sample
+            {
+                int _v;
+                int Value
+                {
+                    get => _v;
+                    set => _v = value;
+                }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("get_Value", 6, 6, 1, "Sample"),
+            new MethodDescriptor("set_Value", 7, 7, 1, "Sample"));
+    }
+
+    [Fact]
+    public void EmitsExpressionBodiedPropertyAsSingleGetRow()
+    {
+        string source = """
+            class Sample
+            {
+                int _v;
+                int Value => _v > 0 ? _v : 0;
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        // A single get_ row (base 1 + one ?:); the expression-bodied property never emits a set_.
+        methods.Should().Equal(new MethodDescriptor("get_Value", 4, 4, 2, "Sample"));
+    }
+
+    [Fact]
+    public void SkipsBodylessAutoAndInitAccessors()
+    {
+        string source = """
+            class Sample
+            {
+                int Value { get; set; }
+                int ReadOnly { get; }
+                int Init { get; init; }
+                int M() => 1;
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        // Every auto/init accessor is bodyless -> skipped; only the bodied method survives.
+        methods.Should().Equal(new MethodDescriptor("M", 6, 6, 1, "Sample"));
+    }
+
+    [Fact]
+    public void EmitsIndexerAccessorsUsingItemName()
+    {
+        string source = """
+            class Sample
+            {
+                int[] _data;
+                int this[int i]
+                {
+                    get { return _data[i]; }
+                    set { _data[i] = value; }
+                }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("get_Item", 6, 6, 1, "Sample"),
+            new MethodDescriptor("set_Item", 7, 7, 1, "Sample"));
+    }
+
+    [Fact]
+    public void EmitsExpressionBodiedIndexerAsSingleGetItemRow()
+    {
+        string source = """
+            class Sample
+            {
+                int[] _data;
+                int this[int i] => _data[i];
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(new MethodDescriptor("get_Item", 4, 4, 1, "Sample"));
+    }
+
+    [Fact]
+    public void DisambiguatesUnaryAndBinaryOperatorsByArity()
+    {
+        string source = """
+            struct Vec
+            {
+                int X;
+                public static Vec operator +(Vec a, Vec b) => a;
+                public static Vec operator -(Vec a) => a;
+                public static Vec operator -(Vec a, Vec b) => a;
+                public static Vec operator +(Vec a) => a;
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        // Only '+'/'-' are declarable as both unary and binary; arity (2 vs 1) splits them.
+        methods.Should().Equal(
+            new MethodDescriptor("op_Addition", 4, 4, 1, "Vec"),
+            new MethodDescriptor("op_UnaryNegation", 5, 5, 1, "Vec"),
+            new MethodDescriptor("op_Subtraction", 6, 6, 1, "Vec"),
+            new MethodDescriptor("op_UnaryPlus", 7, 7, 1, "Vec"));
+    }
+
+    [Fact]
+    public void EmitsImplicitAndExplicitConversionRows()
+    {
+        string source = """
+            struct Money
+            {
+                int Amount;
+                public static implicit operator int(Money m) => m.Amount;
+                public static explicit operator Money(int n) => new();
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("op_Implicit", 4, 4, 1, "Money"),
+            new MethodDescriptor("op_Explicit", 5, 5, 1, "Money"));
+    }
+
+    [Fact]
+    public void EmitsFinalizerAsFinalizeRow()
+    {
+        string source = """
+            class Handle
+            {
+                bool _disposed;
+                ~Handle()
+                {
+                    if (!_disposed)
+                    {
+                        _disposed = true;
+                    }
+                }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        // ~T -> CLR Finalize; StartLine is the destructor decl line, EndLine the body end; base 1 + if.
+        methods.Should().Equal(new MethodDescriptor("Finalize", 4, 10, 2, "Handle"));
+    }
+
+    [Fact]
+    public void EmitsCustomEventAddRemoveRows()
+    {
+        string source = """
+            class Bus
+            {
+                EventHandler? _h;
+                event EventHandler Changed
+                {
+                    add { _h += value; }
+                    remove { _h -= value; }
+                }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("add_Changed", 6, 6, 1, "Bus"),
+            new MethodDescriptor("remove_Changed", 7, 7, 1, "Bus"));
+    }
+
+    [Fact]
+    public void SkipsFieldLikeEventAccessors()
+    {
+        string source = """
+            class Bus
+            {
+                event EventHandler? Changed;
+                int M() => 1;
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        // A field-like event is an EventFieldDeclarationSyntax (compiler-generated add/remove) -> no row.
+        methods.Should().Equal(new MethodDescriptor("M", 4, 4, 1, "Bus"));
+    }
+
+    [Fact]
+    public void EmitsUnsignedRightShiftOperator()
+    {
+        string source = """
+            struct N
+            {
+                int V;
+                public static N operator >>>(N a, int b) => a;
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(new MethodDescriptor("op_UnsignedRightShift", 4, 4, 1, "N"));
+    }
 }

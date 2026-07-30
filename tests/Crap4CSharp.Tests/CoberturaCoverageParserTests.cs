@@ -204,11 +204,12 @@ public class CoberturaCoverageParserTests
     }
 
     [Fact]
-    public void SkipsCompilerGeneratedAndAccessorMethods()
+    public void EmitsAccessorsAndSkipsConstructors()
     {
-        // get_Value/set_Value (accessors, rule 3) and .ctor (rule 4) all carry lines, yet only the real
-        // method Real survives. (T23: the rule-2 intent -- an angle-bracket <M>b__/<M>g__ member -- is no
-        // longer a "skip"; it now ATTRIBUTES to its source method and is proven by the attribution tests.)
+        // T26 (departure #14): the Rule-3 accessor skip is gone, so get_Value/set_Value now emit like
+        // ordinary methods; only the .ctor constructor (Rule 3, formerly Rule 4) is still skipped. Real
+        // and both accessors survive. (T23: an angle-bracket <M>b__/<M>g__ member is no longer a "skip";
+        // it ATTRIBUTES to its source method and is proven by the attribution tests.)
         string xml = """
             <?xml version="1.0"?>
             <coverage>
@@ -241,9 +242,88 @@ public class CoberturaCoverageParserTests
         {
             IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
 
-            result.Should().HaveCount(1);
-            result.Should().ContainKey("Demo.Sample#Real#Sample.cs:9");
-            result.Keys.Should().OnlyContain(k => k == "Demo.Sample#Real#Sample.cs:9");
+            result.Should().HaveCount(3);
+            result.Should().ContainKey("Demo.Sample#get_Value#Sample.cs:6")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Should().ContainKey("Demo.Sample#set_Value#Sample.cs:7")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Should().ContainKey("Demo.Sample#Real#Sample.cs:9")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Keys.Should().NotContain(k => k.Contains(".ctor", StringComparison.Ordinal));
+        });
+    }
+
+    [Fact]
+    public void EmitsAccessorOperatorFinalizerAndEventEntriesButSkipsConstructors()
+    {
+        // T26 (departure #14): with Rule 3 inverted, the accessor entries (get_/set_/add_/remove_) emit;
+        // op_* and Finalize always flowed through (they matched no skip rule); only .ctor is still skipped.
+        // Every method carries one covered line -> 100%, so all eight non-constructor entries appear.
+        string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="Demo.Sample" filename="Sample.cs">
+                      <methods>
+                        <method name=".ctor" signature="()">
+                          <lines><line number="5" hits="1" /></lines>
+                        </method>
+                        <method name="get_Value" signature="()">
+                          <lines><line number="6" hits="1" /></lines>
+                        </method>
+                        <method name="set_Value" signature="()">
+                          <lines><line number="7" hits="1" /></lines>
+                        </method>
+                        <method name="op_Addition" signature="()">
+                          <lines><line number="8" hits="1" /></lines>
+                        </method>
+                        <method name="op_Implicit" signature="()">
+                          <lines><line number="9" hits="1" /></lines>
+                        </method>
+                        <method name="Finalize" signature="()">
+                          <lines><line number="10" hits="1" /></lines>
+                        </method>
+                        <method name="add_Changed" signature="()">
+                          <lines><line number="11" hits="1" /></lines>
+                        </method>
+                        <method name="remove_Changed" signature="()">
+                          <lines><line number="12" hits="1" /></lines>
+                        </method>
+                        <method name="Real" signature="()">
+                          <lines><line number="13" hits="1" /></lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempFile(xml, path =>
+        {
+            IReadOnlyDictionary<string, CoverageData> result = CoberturaCoverageParser.Parse(path);
+
+            result.Should().HaveCount(8);
+            result.Should().ContainKey("Demo.Sample#get_Value#Sample.cs:6")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Should().ContainKey("Demo.Sample#set_Value#Sample.cs:7")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Should().ContainKey("Demo.Sample#op_Addition#Sample.cs:8")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Should().ContainKey("Demo.Sample#op_Implicit#Sample.cs:9")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Should().ContainKey("Demo.Sample#Finalize#Sample.cs:10")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Should().ContainKey("Demo.Sample#add_Changed#Sample.cs:11")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Should().ContainKey("Demo.Sample#remove_Changed#Sample.cs:12")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Should().ContainKey("Demo.Sample#Real#Sample.cs:13")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Keys.Should().NotContain(k => k.Contains(".ctor", StringComparison.Ordinal));
         });
     }
 
@@ -304,8 +384,8 @@ public class CoberturaCoverageParserTests
         //   * CrapScore.Calculate  -- the on-disk dev sample anchor (5 covered lines) -> 100%.
         //   * Sample.Outer/Inner            -> Sample.Outer.Inner              (nested '/' -> '.')
         //   * Sample.Outer`1/Inner`2        -> Sample.Outer`1.Inner`2          (generic arity kept)
-        //   * Sample.Container`1            -- get_Item accessor skipped, Count kept
-        //   * Sample.Worker                -- get_Prop accessor skipped, UseLambda (captured lambda
+        //   * Sample.Container`1            -- get_Item accessor emitted (T26), Count kept
+        //   * Sample.Worker                -- get_Prop accessor emitted (T26), UseLambda (captured lambda
         //                                     inlined) kept as 10 covered lines
         //   * Sample.Worker/<DoAsync>d__4  -- async state machine; its MoveNext body-coverage is
         //                                     RE-ATTRIBUTED to the source method DoAsync (R3/T21).
@@ -422,17 +502,24 @@ public class CoberturaCoverageParserTests
             result.Should().ContainKey("Sample.Worker#UseLambda#Types.cs:39")
                 .WhoseValue.Should().Be(new CoverageData(0, 10));
 
+            // T26 (departure #14): the Rule-3 accessor skip is gone, so the get_Item/get_Prop accessors
+            // now emit like ordinary methods (each a single covered line -> 100%).
+            result.Should().ContainKey("Sample.Container`1#get_Item#Types.cs:23")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+            result.Should().ContainKey("Sample.Worker#get_Prop#Types.cs:30")
+                .WhoseValue.Should().Be(new CoverageData(0, 1));
+
             // R3/T21: the async state machine's MoveNext (lines 33-36, all hit) is attributed to DoAsync.
             result.Should().ContainKey("Sample.Worker#DoAsync#Types.cs:33")
                 .WhoseValue.Should().Be(new CoverageData(0, 4));
 
-            // The synthetic state-machine class, the accessors and the constructor are all absent.
+            // The synthetic state-machine class and the constructor are still absent (T26 removed only
+            // the accessor skip; the <...> state-machine/display-class routing and .ctor skip stand).
             result.Keys.Should().NotContain(k =>
                 k.Contains('<')
                 || k.Contains('>')
                 || k.Contains("d__", StringComparison.Ordinal)
                 || k.Contains("MoveNext", StringComparison.Ordinal)
-                || k.Contains("get_", StringComparison.Ordinal)
                 || k.Contains(".ctor", StringComparison.Ordinal));
         });
     }
