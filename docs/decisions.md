@@ -722,7 +722,14 @@ departure #13 for the behavioral contract; this register records the design ruli
   `Type#method#Path.GetFileName(file):` prefix, so the method stays per-method `N/A` — a SAFE
   under-report even when the synthetic member is fully covered. Pinned by
   `DisplayClassWithMismatchedFilenameYieldsNAnotFalsePass`. Attribution can only ADD real coverage to the
-  CORRECT method or fall to `N/A`; it can never fabricate a false pass.
+  CORRECT method or fall to `N/A`; it can never fabricate a false pass. **Why strictly under-report:** the
+  source method's OWN body coverage is matched by its OWN key regardless of the member-`filename` mismatch,
+  so only the ADDITIVE synthetic contribution is dropped (or is a baseline departure-#1 absence) and
+  effective CRAP can only RISE — the exit-2 gate only becomes MORE likely to fire. Contrast **D-T28a** /
+  **#14 residual (b)**: there a producer/consumer NAME misalignment hid a member that WAS
+  present-in-coverage, uncovered, and high-CC, LOWERING the max-CRAP the gate sees (LESS likely to fire) —
+  the opposite, unsafe direction; that structural difference is why this mechanism is safe and the
+  literal-indexer one was not.
 
 - **D-T23d — skip-guard INVERSION (ordering change only; `IsCompilerGeneratedMethod` UNCHANGED).**
   `ReadClassMethods` now demangles a `b__`/`g__` member and COLLECTS it BEFORE the
@@ -929,8 +936,15 @@ narrow residual; appended to the T26 register). No exit-table row (D-T14a) moves
   `Token.ValueText`; BOTH the expression-bodied (`get_` + base) and accessor-list paths use it. It falls
   back to `Item` when the attribute is ABSENT or its argument is NON-LITERAL (a `const`/`nameof`, not
   statically readable). The frozen `TypeName#method#basename:line` key contract is UNCHANGED — the fix only
-  aligns the parser's producer name with coverlet's. **Scope = LITERAL only.** Two `N/A` residuals remain
-  documented: (i) non-literal `[IndexerName(<const>)]`, and (ii) explicit-interface indexer members.
+  aligns the parser's producer name with coverlet's. **Scope = LITERAL only.** Three `N/A` residuals remain
+  documented: (i) non-literal `[IndexerName(<const>)]`, (ii) explicit-interface indexer members, and (iii)
+  the **syntax-only attribute-identity** limit — the attribute is matched by SIMPLE name with no
+  `SemanticModel`, so a FOREIGN `IndexerName`/`IndexerNameAttribute` type (a user type in another namespace)
+  on a literal-arg indexer is FALSELY matched (parser derives `get_X` while the compiler kept `get_Item`),
+  while an ALIASED BCL attribute (`using IN = System.Runtime.CompilerServices.IndexerNameAttribute;
+  [IN("X")]`) is MISSED (parser falls back to `Item` while the compiler renamed to `get_X`); both misalign
+  the frozen key to the SAME per-member `N/A`, are pathological, and are unresolvable without a
+  `SemanticModel` — consistent with the ratified syntax-only parser design.
   **Reversible upgrade path for (ii):** map an explicit-interface member to its real CLR spelling once a
   real coverlet sample pins it — the explicit-interface name mangling is not compile-verifiable at design
   time, so it is DEFERRED, not guessed.
@@ -1132,7 +1146,11 @@ narrow residual; appended to the T26 register). No exit-table row (D-T14a) moves
     `CrapAnalyzer` already runs for overloads), so a member folds into ITS OWN same-file overload and
     distinct overloads are never blended. A member `filename` that does not match the source method's
     file yields an unmatchable key → the method stays per-method `N/A` (departure #1 family, D-T24d) — a
-    SAFE under-report, never a false pass. **Observable behavior:** never-invoked lambdas and local
+    SAFE under-report, never a false pass: the source method's OWN body coverage still matches its OWN key,
+    so only the ADDITIVE synthetic contribution is dropped and effective CRAP can only RISE (exit-2 gate
+    MORE likely to fire) — unlike **D-T28a** / **#14 residual (b)**, where a producer/consumer NAME
+    misalignment instead hid a present-in-coverage, uncovered, high-CC member and LOWERED the max-CRAP the
+    gate sees (the opposite, unsafe direction). **Observable behavior:** never-invoked lambdas and local
     functions now report their REAL (possibly 0%) coverage and CRAP instead of `N/A`, so they participate
     in the exit-2 threshold gate (closes finding #3's false pass — a never-invoked local function now
     scores CRAP 2.0 at CC 1 / 0% rather than escaping it). Analog of departure #2 (a C#-ecosystem

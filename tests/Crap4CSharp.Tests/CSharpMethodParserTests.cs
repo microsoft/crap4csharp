@@ -721,6 +721,56 @@ public class CSharpMethodParserTests
             new MethodDescriptor("set_Item", 9, 9, 1, "Sample"));
     }
 
+    // T28 (docs/decisions.md D-T28a): IndexerBaseName matches [IndexerName] on its SIMPLE name
+    // (QualifiedNameSyntax.Right / SimpleNameSyntax.Identifier) and accepts the `Attribute` suffix, so the
+    // fully-qualified and suffixed spellings rename the accessors exactly like the bare form above -- locked
+    // here directly (the qualified form is otherwise only exercised end-to-end). Same layout: get/set 7/8.
+    [Fact]
+    public void EmitsRenamedIndexerAccessorsFromQualifiedIndexerName()
+    {
+        string source = """
+            class Sample
+            {
+                int[] _data;
+                [System.Runtime.CompilerServices.IndexerName("Foo")]
+                int this[int i]
+                {
+                    get { return _data[i]; }
+                    set { _data[i] = value; }
+                }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("get_Foo", 7, 7, 1, "Sample"),
+            new MethodDescriptor("set_Foo", 8, 8, 1, "Sample"));
+    }
+
+    [Fact]
+    public void EmitsRenamedIndexerAccessorsFromAttributeSuffixedIndexerName()
+    {
+        string source = """
+            class Sample
+            {
+                int[] _data;
+                [IndexerNameAttribute("Foo")]
+                int this[int i]
+                {
+                    get { return _data[i]; }
+                    set { _data[i] = value; }
+                }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("get_Foo", 7, 7, 1, "Sample"),
+            new MethodDescriptor("set_Foo", 8, 8, 1, "Sample"));
+    }
+
     [Fact]
     public void DisambiguatesUnaryAndBinaryOperatorsByArity()
     {
