@@ -650,6 +650,77 @@ public class CSharpMethodParserTests
         methods.Should().Equal(new MethodDescriptor("get_Item", 4, 4, 1, "Sample"));
     }
 
+    // T28 (docs/decisions.md D-T28a): a LITERAL [IndexerName("X")] renames an indexer's CLR accessors to
+    // get_X/set_X -- the spelling coverlet emits -- so the parser derives the base name from the attribute
+    // instead of hardcoding `Item`. A missing attribute (EmitsIndexerAccessorsUsingItemName above) or a
+    // non-literal argument falls back to `Item`. Syntax-only: no using directive is needed to parse it.
+    [Fact]
+    public void EmitsRenamedIndexerAccessorsFromLiteralIndexerName()
+    {
+        string source = """
+            class Sample
+            {
+                int[] _data;
+                [IndexerName("Foo")]
+                int this[int i]
+                {
+                    get { return _data[i]; }
+                    set { _data[i] = value; }
+                }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("get_Foo", 7, 7, 1, "Sample"),
+            new MethodDescriptor("set_Foo", 8, 8, 1, "Sample"));
+    }
+
+    [Fact]
+    public void EmitsExpressionBodiedRenamedIndexerAsSingleGetRow()
+    {
+        // Attribute inline with the declaration so the single-row StartLine (the whole indexer node,
+        // attributes included) is unambiguous. This pins the get_ + base-name path of the fix.
+        string source = """
+            class Sample
+            {
+                int[] _data;
+                [IndexerName("Foo")] int this[int i] => _data[i];
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(new MethodDescriptor("get_Foo", 4, 4, 1, "Sample"));
+    }
+
+    [Fact]
+    public void FallsBackToItemWhenIndexerNameArgumentIsNotLiteral()
+    {
+        string source = """
+            class Sample
+            {
+                const string Name = "Foo";
+                int[] _data;
+                [IndexerName(Name)]
+                int this[int i]
+                {
+                    get { return _data[i]; }
+                    set { _data[i] = value; }
+                }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        // A non-literal [IndexerName(<const>)] argument is not statically readable by the syntax-only
+        // parser, so the base name stays the default `Item` (docs/decisions.md #14 residual (b)).
+        methods.Should().Equal(
+            new MethodDescriptor("get_Item", 8, 8, 1, "Sample"),
+            new MethodDescriptor("set_Item", 9, 9, 1, "Sample"));
+    }
+
     [Fact]
     public void DisambiguatesUnaryAndBinaryOperatorsByArity()
     {

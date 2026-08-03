@@ -1125,11 +1125,16 @@ public class CrapAnalyzerTests
         });
     }
 
-    // A3 -- a [IndexerName]-renamed indexer: the parser emits get_Item (the default CLR indexer name),
-    // but coverlet emits get_Element (the renamed CLR name). The keys never align, so the metric
-    // degrades to a deterministic SAFE N/A (null coverage + null CRAP) -- never a false pass.
+    // A3 (INVERTED by T28; docs/decisions.md D-T28a/D-T28b) -- a LITERAL [IndexerName("X")]-renamed
+    // indexer. The parser now emits get_X/set_X (the CLR spelling coverlet emits), so the frozen
+    // reciprocal key ALIGNS and the metric round-trips coverage into a real CRAP. Previously the parser
+    // emitted get_Item while coverlet emitted get_Element, degrading to N/A and letting an uncovered
+    // high-CC indexer FALSE-PASS the exit-2 gate (the disproven "safe N/A / never a false pass" claim).
+    // This is the load-bearing gate round-trip: an uncovered (0%) CC-9 renamed indexer scores CRAP 90.0,
+    // MaxCrap picks it up, and the strict > 8.0 ThresholdExceeded gate fires (exit 2). The qualified
+    // attribute form also exercises the parser's simple-name match.
     [Fact]
-    public void RenamedIndexerDegradesToSafeNA()
+    public void RenamedIndexerRoundTripsCoverageAndFiresGate()
     {
         const string source = """
             namespace Demo;
@@ -1137,6 +1142,79 @@ public class CrapAnalyzerTests
             {
                 int[] _data;
                 [System.Runtime.CompilerServices.IndexerName("Element")]
+                public int this[int i]
+                {
+                    get
+                    {
+                        if (i == 0) { return 0; }
+                        if (i == 1) { return 1; }
+                        if (i == 2) { return 2; }
+                        if (i == 3) { return 3; }
+                        if (i == 4) { return 4; }
+                        if (i == 5) { return 5; }
+                        if (i == 6) { return 6; }
+                        if (i == 7) { return 7; }
+                        return _data[i];
+                    }
+                }
+            }
+            """;
+
+        // get_Element (the [IndexerName] CLR spelling), every line uncovered -> 0%.
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Bag" filename="Bag.cs">
+                      <methods>
+                        <method name="get_Element" signature="(System.Int32)">
+                          <lines>
+                            <line number="8" hits="0" />
+                            <line number="10" hits="0" />
+                            <line number="18" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Bag.cs", source);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            MethodMetrics metric = result.Single(m => m.MethodName == "get_Element");
+            metric.ClassName.Should().Be("Demo.Bag");
+            metric.Complexity.Should().Be(9);
+            metric.CoveragePercent!.Value.Should().BeApproximately(0.0, 1e-9);
+            metric.CrapScore!.Value.Should().BeApproximately(90.0, 1e-9);
+
+            // The gate round-trip: the now-scored indexer is the run maximum and the exit-2 gate fires.
+            double max = CliApplication.MaxCrap(result);
+            max.Should().BeApproximately(90.0, 1e-9);
+            CliApplication.ThresholdExceeded(max).Should().BeTrue();
+        });
+    }
+
+    // A4 (T28) -- a COVERED literal [IndexerName("X")] indexer scores a real CRAP (not N/A): the renamed
+    // get_Element key aligns with coverlet, 100% coverage at CC 1 -> CRAP 1.0.
+    [Fact]
+    public void CoveredRenamedIndexerScoresRealCrap()
+    {
+        const string source = """
+            namespace Demo;
+            class Bag
+            {
+                int[] _data;
+                [IndexerName("Element")]
                 public int this[int i]
                 {
                     get { return _data[i]; }
@@ -1172,10 +1250,10 @@ public class CrapAnalyzerTests
 
             IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
 
-            MethodMetrics metric = result.Single(m => m.MethodName == "get_Item");
+            MethodMetrics metric = result.Single(m => m.MethodName == "get_Element");
             metric.ClassName.Should().Be("Demo.Bag");
-            metric.CoveragePercent.Should().BeNull();
-            metric.CrapScore.Should().BeNull();
+            metric.CoveragePercent!.Value.Should().BeApproximately(100.0, 1e-9);
+            metric.CrapScore!.Value.Should().BeApproximately(1.0, 1e-9);
         });
     }
 

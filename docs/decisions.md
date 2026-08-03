@@ -528,6 +528,16 @@ the invariants.
   D-T12e `ResultsDirectoryName` reciprocal contract and coverage-base = `_projectRoot` are preserved. The
   decoupling INTENT survives (coverage/locate take a pre-resolved root and never resolve on their own).
 
+- **D-T28c — Finding 7 (S6 re-run #3): `TestProjectResolver` does no MSBuild evaluation (ACCEPTED
+  LIMITATION; documented at T28, fix scheduled T29).** `TestProjectResolver` resolves `ProjectReference`
+  closures by RAW-XML parse (`XDocument`) with NO MSBuild property evaluation, so a valid test project
+  whose `ProjectReference` path uses an MSBuild property (e.g. `$(RepoRoot)`,
+  `$(MSBuildThisFileDirectory)`) fails transitive resolution → `Execute` fail-fasts with the clean
+  `No test project` message (exit 1). This is FAIL-SAFE (no mis-scoring, no false pass; distinct from the
+  D-T17e malformed-`.csproj` case, which is an XML fault) and therefore ACCEPTED for now. **T29 (scheduled
+  fast-follow):** resolve a small common MSBuild-property set so legitimate monorepo targets resolve.
+  (Placed in the T17 resolver register for context; authored at T28.)
+
 ## T21 register — Async/iterator coverage attribution; S8 close-out (Anders T21 review, 🟢)
 
 Resolved decisions and invariants for the S8 hardening slice (executed after S7 dogfood, which
@@ -851,16 +861,23 @@ frozen key byte-identical, exit-matrix + T21/T23 attribution untouched.
   eligible set). This is the sub-decision Mr. Das delegated ("include or explicitly defer — your call, but
   state it"): **stated — `>>>` in, `checked` out (skip), upgradeable.**
 
-- **D-T26f — safe residuals (documented; NO product choice, no Mr. Das decision needed).** (1) An
-  `[IndexerName("X")]`-renamed indexer emits parser `get_Item` while coverlet emits `get_X` → key mismatch
-  → deterministic per-member `N/A`, never a false pass. (2) Explicit-interface members inherit the existing
+- **D-T26f — safe residuals (documented; NO product choice, no Mr. Das decision needed). ⚠ (1) CORRECTED
+  BY T28 — see D-T28a/D-T28b.** (1) **[The "never a false pass" claim was DISPROVEN; the LITERAL case is
+  now RESOLVED by T28.]** A LITERAL `[IndexerName("X")]` indexer no longer degrades: the T28 parser emits
+  `get_X`/`set_X` (coverlet's CLR spelling), so the reciprocal key ALIGNS and coverage round-trips into a
+  real CRAP. The residual `N/A` is now narrow — (i) a NON-LITERAL `[IndexerName(<const>)]` argument (not
+  statically readable) and (ii) explicit-interface members — and is NOT "never a false pass": an uncovered
+  high-CC member in either case degrades to `N/A`, is skipped by `MaxCrap`, and ESCAPES the exit-2 gate (a
+  false negative). (2) Explicit-interface members inherit the existing
   D-T21c `N/A` residual. (3) Genuinely-adjacent same-CLR-name conversions/indexers rely on basename +
   nearest-line and inherit the ACCEPTED overload-adjacency residual (D-T21c/D-T24g) — a best-effort
   cross-attribution WITHIN one CLR-name family, never a false pass across DISTINCT members. Inherits
   D-T24g (same-basename-different-directory). Phrasing precision (Anders §8, non-blocking): a "two
   same-CLR-name conversions → deterministic N/A" is not naturally producible (nearest-line always matches
-  something within the name family), so the deterministic safe-`N/A` residual is pinned via the
-  `[IndexerName]` edge (test A3) and the separated case is proven to resolve correctly (test A2). A
+  something within the name family), so the deterministic safe-`N/A` residual is now pinned via the
+  NON-LITERAL `[IndexerName(<const>)]` fallback (T28 parser test) — the LITERAL `[IndexerName("X")]` edge
+  is RESOLVED by T28 (test A3 was INVERTED to a real-CRAP gate round-trip) — and the separated case is
+  proven to resolve correctly (test A2). A
   GUARANTEED `N/A` for adjacent same-name conversions (detect-and-force rather than best-effort) would be a
   NEW product choice — none taken; proceeding on the safe inherited residual per Mr. Das's "otherwise
   proceed."
@@ -872,12 +889,64 @@ frozen key byte-identical, exit-matrix + T21/T23 attribution untouched.
   accessor/operator/conversion/finalizer/event descriptor emission + CC oracles and the bodyless skips;
   coverage C1 pins the accessor/operator/finalizer/event entries emit while `.ctor` stays skipped; analyzer
   A1–A3 pin the end-to-end `get_`/`op_` round-trip, separated same-name resolution, and the `[IndexerName]`
-  safe-`N/A`. No crap4java parity break (crap4java is method-only; a knowing C#-breadth departure, not a
+  case (A3 INVERTED by T28 → the literal rename now round-trips to a real CRAP and fires the gate; see
+  D-T28a/D-T28b). No crap4java parity break (crap4java is method-only; a knowing C#-breadth departure, not a
   fidelity regression). **Two style-only deviations from the contract's illustrative C# (behavior
   identical, ✅):** the `ConversionOperatorDeclarationSyntax` case computes the name into a `string
   convName` local before calling `Emit(...)` (SA1117, vs the contract's inline ternary 4th arg), and the
   two new test files omit the blank line between the T26 header comment and `[Fact]` (SA1512/SA1513). Pure
   formatting; Bhaskar re-derived every oracle independently and matched.
+
+- **D-T28d — Finding 5b (S6 re-run #3): C# top-level statements unanalyzed (ACCEPTED narrow residual;
+  documented at T28).** C# top-level statements (`GlobalStatementSyntax`) yield no `CSharpMethodParser`
+  descriptor, so entry-point logic written that way is unanalyzed and escapes the exit-2 gate — the same
+  CLASS as the T26/T27 no-descriptor gate-evasion, but FAIL-SAFE and narrow (one compiler-synthesized
+  entry method, entry-point file only; every other real method in the program is still scored). ACCEPTED
+  as a documented residual; not scheduled. (Placed in the T26 member-decomposition register for context;
+  authored at T28.)
+
+## T28 register — literal `[IndexerName]` gate-evasion fix; ledger correction (S11; S6 re-run #3)
+
+Resolved decisions for the S11 first fast-follow — the third independent clean-room S6 eval (gpt-5.6-sol,
+report-only), reconciled by Anders against the #1–#14 ledger (6/9 findings + all parity deltas already
+ratified). Mr. Das ruled: FIX the literal `[IndexerName]` gate-evasion (finding #6) and CORRECT the
+disproven "never a false pass" wording; explicit-interface members stay a documented residual. Entry map:
+**D-T28a** the parser fix (literal-only scope + reversible upgrade path), **D-T28b** the ledger correction
++ test inversion, **D-T28c** Finding 7 (property-based `ProjectReference` — accepted limitation, T29
+fast-follow; appended to the T17 resolver register), **D-T28d** Finding 5b (top-level statements — accepted
+narrow residual; appended to the T26 register). No exit-table row (D-T14a) moves; the frozen reciprocal
+`TypeName#method#basename:line` key is UNCHANGED. Build 0/0 Release, 176/176 unit green.
+
+- **D-T28a — literal `[IndexerName]` gate-evasion fix (RULED by Mr. Das: fix the literal case; scope =
+  literal only).** `CSharpMethodParser`'s indexer case hardcoded the CLR default base name `Item`
+  (`get_Item`/`set_Item`), but coverlet emits the `[IndexerName]` CLR spelling (`get_X`/`set_X`), so the
+  frozen reciprocal key never matched → per-member `N/A`. An uncovered high-CC such indexer (evaluator
+  probe: CC 9, 0% coverage, true CRAP = 9²·1 + 9 = **90.0**) therefore reported `N/A`, was skipped by
+  `MaxCrap`, and FALSE-PASSED the exit-2 threshold gate. **Fix (syntax-only, no semantic model):** a new
+  private `static string IndexerBaseName(IndexerDeclarationSyntax)` derives the base name from a LITERAL
+  `[IndexerName("X")]` attribute — matched on its SIMPLE name so the qualified form
+  `[System.Runtime.CompilerServices.IndexerName("X")]` is recognised — returning the string literal's
+  `Token.ValueText`; BOTH the expression-bodied (`get_` + base) and accessor-list paths use it. It falls
+  back to `Item` when the attribute is ABSENT or its argument is NON-LITERAL (a `const`/`nameof`, not
+  statically readable). The frozen `TypeName#method#basename:line` key contract is UNCHANGED — the fix only
+  aligns the parser's producer name with coverlet's. **Scope = LITERAL only.** Two `N/A` residuals remain
+  documented: (i) non-literal `[IndexerName(<const>)]`, and (ii) explicit-interface indexer members.
+  **Reversible upgrade path for (ii):** map an explicit-interface member to its real CLR spelling once a
+  real coverlet sample pins it — the explicit-interface name mangling is not compile-verifiable at design
+  time, so it is DEFERRED, not guessed.
+
+- **D-T28b — ledger correction + test inversion.** The DISPROVEN "never a false pass" wording is corrected
+  at **D-T26f(1)**, **D-T26g** (test-consequences note), and **#14 residual (b)**: the LITERAL
+  `[IndexerName("X")]` case is RESOLVED (round-trips coverage); the residual `N/A` is restated narrowly for
+  non-literal `[IndexerName(<const>)]` + explicit-interface members and flagged as a genuine gate-evasion
+  (false negative) — an uncovered high-CC member there escapes the exit-2 gate, i.e. explicitly NOT "never
+  a false pass." Tests: the old analyzer A3 (`RenamedIndexerDegradesToSafeNA`, which asserted null
+  coverage/CRAP) is INVERTED to `RenamedIndexerRoundTripsCoverageAndFiresGate` — an uncovered CC-9
+  `[System.Runtime.CompilerServices.IndexerName("Element")]` indexer scores CRAP 90.0, `MaxCrap` picks it
+  up, and `ThresholdExceeded` fires (the load-bearing gate round-trip); a new
+  `CoveredRenamedIndexerScoresRealCrap` (A4) pins the covered case (100% → CRAP 1.0); three new parser
+  tests pin literal-rename → `get_X`/`set_X` (block + expression-bodied) and the non-literal fallback →
+  `get_Item`/`set_Item`.
 
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
@@ -1094,12 +1163,18 @@ frozen key byte-identical, exit-matrix + T21/T23 attribution untouched.
     operator must be declared alongside its non-checked sibling, which IS scored, so the operator KIND is
     covered; emitting the base name for the checked form would collide two same-CLR-name descriptors and
     risk a false pass (Anders design call under Mr. Das's delegation; reversible upgrade path recorded).
-    **Documented safe residuals (never a false pass across DISTINCT members):** (a) same-CLR-name
+    **Documented residuals:** (a) *(never a false pass across DISTINCT members)* same-CLR-name
     conversions/indexers rely on basename + nearest-line and inherit the accepted overload-adjacency
-    residual (D-T21c/D-T24g); (b) `[IndexerName]`-renamed indexers and explicit-interface members whose
-    CLR name does not match the coverage entry degrade to per-member `N/A`. See the **T26 register**
-    (D-T26a–g). (Ruled by Mr. Das: MAXIMAL scope + both extras — finalizers + custom event accessors;
-    b-1 CLR-name keying; edges = documented safe-`N/A`.)
+    residual (D-T21c/D-T24g); (b) **[LITERAL case RESOLVED by T28 — see D-T28a; the "never a false pass"
+    characterization of (b) was DISPROVEN.]** a LITERAL `[IndexerName("X")]` indexer now emits parser
+    `get_X`/`set_X` and round-trips coverage; the residual `N/A` is narrowed to (i) a NON-LITERAL
+    `[IndexerName(<const>)]` argument (not statically readable) and (ii) explicit-interface members whose
+    CLR name does not match the coverage entry — and for (b) this is NOT "never a false pass": an uncovered
+    high-CC member there degrades to `N/A`, is skipped by `MaxCrap`, and ESCAPES the exit-2 gate (a false
+    negative). See the **T26 register** (D-T26a–g) and the **T28 register** (D-T28a–d). (Ruled by Mr. Das:
+    MAXIMAL scope + both extras — finalizers + custom event accessors; b-1 CLR-name keying; (a) documented
+    safe-`N/A`; (b) literal case RESOLVED at T28, non-literal/explicit-interface a documented gate-evasion
+    residual.)
 
 ## Cyclomatic complexity — authoritative node set
 

@@ -123,13 +123,17 @@ public static class CSharpMethodParser
                     break;
 
                 case IndexerDeclarationSyntax idx:
+                    // Base name is `Item` unless a LITERAL [IndexerName("X")] renames the accessors to
+                    // get_X/set_X -- the spelling coverlet emits (docs/decisions.md D-T28a). Aligning the
+                    // producer name with coverlet's is the whole fix; the reciprocal key contract is intact.
+                    string indexerName = IndexerBaseName(idx);
                     if (idx.ExpressionBody is not null)
                     {
-                        Emit(idx, null, idx.ExpressionBody, "get_Item");
+                        Emit(idx, null, idx.ExpressionBody, "get_" + indexerName);
                     }
                     else
                     {
-                        EmitAccessors(idx.AccessorList, "Item");
+                        EmitAccessors(idx.AccessorList, indexerName);
                     }
 
                     break;
@@ -164,6 +168,44 @@ public static class CSharpMethodParser
         string typeChain = string.Join(".", types);
         string ns = string.Join(".", namespaces);
         return ns.Length == 0 ? typeChain : $"{ns}.{typeChain}";
+    }
+
+    // Derives an indexer's CLR base name (docs/decisions.md D-T28a). A plain indexer compiles to `Item`
+    // (get_Item/set_Item), but a LITERAL [IndexerName("X")] renames the accessors to get_X/set_X -- the
+    // spelling coverlet emits -- so the syntax-only parser must match it, or the frozen reciprocal key
+    // never aligns and an uncovered high-CC renamed indexer escapes the exit-2 gate. Reads the attribute's
+    // first string-literal argument directly (no semantic model); the attribute is matched on its SIMPLE
+    // name, so the qualified form [System.Runtime.CompilerServices.IndexerName("X")] is recognised too. A
+    // missing attribute OR a non-literal argument (a const/nameof, not statically readable) falls back to
+    // `Item` -- a documented per-member N/A residual (docs/decisions.md #14 residual (b)).
+    private static string IndexerBaseName(IndexerDeclarationSyntax idx)
+    {
+        foreach (AttributeListSyntax attributeList in idx.AttributeLists)
+        {
+            foreach (AttributeSyntax attribute in attributeList.Attributes)
+            {
+                string attributeName = attribute.Name switch
+                {
+                    QualifiedNameSyntax qualified => qualified.Right.Identifier.Text,
+                    SimpleNameSyntax simple => simple.Identifier.Text,
+                    _ => attribute.Name.ToString(),
+                };
+
+                if (attributeName is not ("IndexerName" or "IndexerNameAttribute"))
+                {
+                    continue;
+                }
+
+                if (attribute.ArgumentList is { Arguments.Count: > 0 } argumentList
+                    && argumentList.Arguments[0].Expression is LiteralExpressionSyntax literal
+                    && literal.IsKind(SyntaxKind.StringLiteralExpression))
+                {
+                    return literal.Token.ValueText;
+                }
+            }
+        }
+
+        return "Item";
     }
 
     // Maps a user-defined operator to its CLR method name (docs/decisions.md D-T26b). The overloadable
