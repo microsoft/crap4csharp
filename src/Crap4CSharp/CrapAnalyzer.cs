@@ -60,6 +60,25 @@ public static class CrapAnalyzer
                     methodName: method.Name,
                     sourceFile: sourceFile,
                     line: method.StartLine);
+
+                // T30 (departure #15): coverlet #507 records only the FIRST accessor on a shared physical
+                // source line and drops the rest from the cobertura XML, so an emitted same-line SECOND
+                // accessor is structurally absent (hit-independent, no config remedy). When such a
+                // CoverletBlind descriptor misses BOTH exact and nearest lookup (coverage is null) AND its
+                // enclosing type is present in this populated map (evidence the type WAS instrumented),
+                // score it as a real 0% -- uninvoked within an instrumented type -- instead of N/A, so an
+                // uncalled high-CC second accessor no longer escapes the exit-2 gate. Every other absent-
+                // from-populated-report member stays N/A (W4/departure #1); name-mangling residuals
+                // (explicit-interface, non-literal/foreign [IndexerName], async/state-machine) are NOT
+                // coverlet-blind, so they are untouched. The type-present guard only suppresses the
+                // pathological enclosing-type-entirely-absent case (where N/A is correct).
+                if (coverage is null
+                    && method.CoverletBlind
+                    && EnclosingTypePresent(coverageMap, method.TypeName, sourceFile))
+                {
+                    coverage = 0.0;
+                }
+
                 double? crap = CrapScore.Calculate(method.Complexity, coverage);
                 metrics.Add(new MethodMetrics(
                     MethodName: method.Name,
@@ -168,5 +187,31 @@ public static class CrapAnalyzer
     {
         string exactKey = typeName + "#" + methodName + "#" + sourceFile + ":" + line.ToString(CultureInfo.InvariantCulture);
         return coverageMap.TryGetValue(exactKey, out CoverageData? exact) ? exact.CoveragePercent : null;
+    }
+
+    // T30 (departure #15): the type-present guard for the coverlet-blind 0%-promotion. Private (least-
+    // privilege -- no test calls it directly; exercised through Analyze like ExactCoverage). True iff the
+    // populated map holds any key under this exact enclosing type AND source-file basename -- i.e. the
+    // surviving first accessor (or any sibling member) of the same type/file WAS instrumented. The '#'
+    // after typeName is the exact-type delimiter (so "Foo" never matches "FooBar#"/"Foo.Nested#"), and
+    // "#basename:" bounds the frozen key's basename segment (TypeName#method#basename:line, T24). Runs
+    // only for the rare blind-AND-absent descriptor, so an O(keys) scan is fine (no precompute -- YAGNI).
+    private static bool EnclosingTypePresent(
+        IReadOnlyDictionary<string, CoverageData> coverageMap,
+        string typeName,
+        string sourceFile)
+    {
+        string typePrefix = typeName + "#";
+        string basenameSegment = "#" + sourceFile + ":";
+        foreach (string key in coverageMap.Keys)
+        {
+            if (key.StartsWith(typePrefix, StringComparison.Ordinal)
+                && key.Contains(basenameSegment, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

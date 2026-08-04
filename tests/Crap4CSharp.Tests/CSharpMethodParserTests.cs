@@ -891,4 +891,188 @@ public class CSharpMethodParserTests
 
         methods.Should().Equal(new MethodDescriptor("op_UnsignedRightShift", 4, 4, 1, "N"));
     }
+
+    // T30 (docs/decisions.md departure #15 / D-T30a): coverlet #507 records only the FIRST accessor on a
+    // shared physical source line and drops the rest, so the parser flags CoverletBlind on an accessor
+    // whose declaration start line equals an EARLIER accessor's of the same member. First-on-line wins;
+    // the flag is kind-agnostic (get/set/init/add/remove) and keyed on the accessor KEYWORD line, not the
+    // body end. These pins assert the blind flag directly via full-record equality (P-b1..8).
+
+    // P-b1 -- one-line expression-bodied get/set: get is first-on-line (not blind); set shares the line
+    // (blind). The set expression carries three nested ?: -> CC 4 (the gate-relevant CC>=3 escape shape).
+    [Fact]
+    public void FlagsSecondExpressionAccessorOnSharedLineAsCoverletBlind()
+    {
+        string source = """
+            class Sample
+            {
+                int _v;
+                int Value { get => _v; set => _v = value > 0 ? value > 1 ? value > 2 ? value : 0 : 0 : 0; }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("get_Value", 4, 4, 1, "Sample", false),
+            new MethodDescriptor("set_Value", 4, 4, 4, "Sample", true));
+    }
+
+    // P-b2 -- one-line block get/set: set shares get's line -> blind.
+    [Fact]
+    public void FlagsSecondBlockAccessorOnSharedLineAsCoverletBlind()
+    {
+        string source = """
+            class Sample
+            {
+                int _v;
+                int Value { get { return _v; } set { if (value > 0) { _v = value; } } }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("get_Value", 4, 4, 1, "Sample", false),
+            new MethodDescriptor("set_Value", 4, 4, 2, "Sample", true));
+    }
+
+    // P-b3 -- accessors on SEPARATE lines: neither blind, even though the property spans many lines.
+    [Fact]
+    public void DoesNotFlagAccessorsOnSeparateLines()
+    {
+        string source = """
+            class Sample
+            {
+                int _v;
+                int Value
+                {
+                    get { return _v; }
+                    set { _v = value; }
+                }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("get_Value", 6, 6, 1, "Sample", false),
+            new MethodDescriptor("set_Value", 7, 7, 1, "Sample", false));
+    }
+
+    // P-b4 -- get and set KEYWORDS share the line but the set body wraps over several lines: set is still
+    // blind (start line, NOT body end). set_Value's EndLine (9) proves the wrap; its StartLine (4) proves
+    // the shared-keyword-line detection.
+    [Fact]
+    public void FlagsSecondAccessorWhenKeywordsShareLineAndBodyWraps()
+    {
+        string source = """
+            class Sample
+            {
+                int _v;
+                int Value { get => _v; set {
+                    if (value > 0)
+                    {
+                        _v = value;
+                    }
+                } }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("get_Value", 4, 4, 1, "Sample", false),
+            new MethodDescriptor("set_Value", 4, 9, 2, "Sample", true));
+    }
+
+    // P-b5 -- one-line indexer: set_Item shares get_Item's line -> blind.
+    [Fact]
+    public void FlagsSecondIndexerAccessorOnSharedLineAsCoverletBlind()
+    {
+        string source = """
+            class Sample
+            {
+                int[] _data;
+                int this[int i] { get { return _data[i]; } set { _data[i] = value; } }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("get_Item", 4, 4, 1, "Sample", false),
+            new MethodDescriptor("set_Item", 4, 4, 1, "Sample", true));
+    }
+
+    // P-b6 -- custom event: one-line add/remove -> remove_ blind; the multi-line form -> neither blind.
+    [Fact]
+    public void FlagsSecondEventAccessorOnSharedLineButNotAcrossLines()
+    {
+        string oneLine = """
+            class Bus
+            {
+                EventHandler? _h;
+                event EventHandler Changed { add { _h += value; } remove { _h -= value; } }
+            }
+            """;
+
+        CSharpMethodParser.Parse(oneLine).Should().Equal(
+            new MethodDescriptor("add_Changed", 4, 4, 1, "Bus", false),
+            new MethodDescriptor("remove_Changed", 4, 4, 1, "Bus", true));
+
+        string multiLine = """
+            class Bus
+            {
+                EventHandler? _h;
+                event EventHandler Changed
+                {
+                    add { _h += value; }
+                    remove { _h -= value; }
+                }
+            }
+            """;
+
+        CSharpMethodParser.Parse(multiLine).Should().Equal(
+            new MethodDescriptor("add_Changed", 6, 6, 1, "Bus", false),
+            new MethodDescriptor("remove_Changed", 7, 7, 1, "Bus", false));
+    }
+
+    // P-b7 -- reverse order on one line: set is first-on-line (not blind), get is blind. The rule is
+    // kind-agnostic -- first-on-line wins regardless of get/set kind, and document order drives emission.
+    [Fact]
+    public void FlagsFirstOnLineWinnerRegardlessOfAccessorKind()
+    {
+        string source = """
+            class Sample
+            {
+                int _v;
+                int Value { set { _v = value; } get { return _v; } }
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(
+            new MethodDescriptor("set_Value", 4, 4, 1, "Sample", false),
+            new MethodDescriptor("get_Value", 4, 4, 1, "Sample", true));
+    }
+
+    // P-b8 -- an expression-bodied get-only property is a single accessor: never routed through the
+    // shared-line detection -> never blind.
+    [Fact]
+    public void DoesNotFlagExpressionBodiedGetOnlyProperty()
+    {
+        string source = """
+            class Sample
+            {
+                int _v;
+                int Value => _v;
+            }
+            """;
+
+        IReadOnlyList<MethodDescriptor> methods = CSharpMethodParser.Parse(source);
+
+        methods.Should().Equal(new MethodDescriptor("get_Value", 4, 4, 1, "Sample", false));
+    }
 }

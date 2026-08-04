@@ -505,6 +505,311 @@ public class CliApplicationTests
         });
     }
 
+    // T30 (docs/decisions.md departure #15 / D-T30d) -- end-to-end gate smokes for the coverlet-blind
+    // 0%-promotion, one per empirically-confirmed escape shape plus a regression + a no-spurious-trip
+    // guard. Each simulates coverlet #507 by OMITTING the dropped same-line second accessor from the
+    // report (exactly what coverlet does), keeping the surviving first accessor present so the
+    // type-present guard is satisfied. FakeExecutor supplies the report -- no real `dotnet test`.
+
+    // Escape closed (property, block setter): an uncalled same-line block setter (CC 4) is dropped by
+    // #507 -> promoted to 0% -> CRAP 20 -> exit 2. Previously it rendered N/A and escaped the gate.
+    [Fact]
+    public void SameLineBlockSetterEscapeClosedFiresGate()
+    {
+        const string source = """
+            namespace demo;
+            class Sample
+            {
+                int _v;
+                int Danger { get { return _v; } set { if (value > 0) { if (value > 1) { if (value > 2) { _v = value; } } } } }
+            }
+            """;
+
+        // coverlet #507 keeps only get_Danger (the first accessor on line 5) and drops set_Danger.
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="demo.Sample" filename="Sample.cs">
+                      <methods>
+                        <method name="get_Danger" signature="()">
+                          <lines>
+                            <line number="5" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempRoot(root =>
+        {
+            string src = ScaffoldModule(root, "Foo", "Sample.cs", source);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, xml)));
+
+            int exit = app.Execute([src]);
+
+            exit.Should().Be(2);
+            error.ToString().Should().Contain("CRAP threshold exceeded");
+        });
+    }
+
+    // Escape closed (property, expression setter): the expression-bodied same-line setter (three ?: ->
+    // CC 4) is likewise dropped by #507 -> promoted -> exit 2.
+    [Fact]
+    public void SameLineExpressionSetterEscapeClosedFiresGate()
+    {
+        const string source = """
+            namespace demo;
+            class Sample
+            {
+                int _v;
+                int Danger { get => _v; set => _v = value > 0 ? value > 1 ? value > 2 ? value : 0 : 0 : 0; }
+            }
+            """;
+
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="demo.Sample" filename="Sample.cs">
+                      <methods>
+                        <method name="get_Danger" signature="()">
+                          <lines>
+                            <line number="5" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempRoot(root =>
+        {
+            string src = ScaffoldModule(root, "Foo", "Sample.cs", source);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, xml)));
+
+            int exit = app.Execute([src]);
+
+            exit.Should().Be(2);
+            error.ToString().Should().Contain("CRAP threshold exceeded");
+        });
+    }
+
+    // Escape closed (indexer): an uncalled same-line indexer setter (CC 4) dropped by #507 -> exit 2.
+    [Fact]
+    public void SameLineIndexerSetterEscapeClosedFiresGate()
+    {
+        const string source = """
+            namespace demo;
+            class Sample
+            {
+                int[] _data;
+                int this[int i] { get { return _data[i]; } set { if (i > 0) { if (i > 1) { if (i > 2) { _data[i] = value; } } } } }
+            }
+            """;
+
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="demo.Sample" filename="Sample.cs">
+                      <methods>
+                        <method name="get_Item" signature="(System.Int32)">
+                          <lines>
+                            <line number="5" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempRoot(root =>
+        {
+            string src = ScaffoldModule(root, "Foo", "Sample.cs", source);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, xml)));
+
+            int exit = app.Execute([src]);
+
+            exit.Should().Be(2);
+            error.ToString().Should().Contain("CRAP threshold exceeded");
+        });
+    }
+
+    // Escape closed (custom event): an uncalled same-line remove accessor (CC 4) dropped by #507 -> exit 2.
+    [Fact]
+    public void SameLineEventRemoveEscapeClosedFiresGate()
+    {
+        const string source = """
+            namespace demo;
+            class Bus
+            {
+                EventHandler? _h;
+                event EventHandler Changed { add { _h += value; } remove { if (_h != null) { if (value != null) { if (_h == value) { _h -= value; } } } } }
+            }
+            """;
+
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="demo.Bus" filename="Bus.cs">
+                      <methods>
+                        <method name="add_Changed" signature="(System.EventHandler)">
+                          <lines>
+                            <line number="5" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempRoot(root =>
+        {
+            string src = ScaffoldModule(root, "Foo", "Bus.cs", source);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, xml)));
+
+            int exit = app.Execute([src]);
+
+            exit.Should().Be(2);
+            error.ToString().Should().Contain("CRAP threshold exceeded");
+        });
+    }
+
+    // Regression: a MULTI-LINE setter (get and set on separate lines) is NOT blind, so coverlet emits it
+    // normally at real 0% and it is caught the unchanged way (CRAP 20 -> exit 2); promotion never fires.
+    [Fact]
+    public void MultiLineSetterStillCaughtAtRealZeroCoverage()
+    {
+        const string source = """
+            namespace demo;
+            class Sample
+            {
+                int _v;
+                int Danger
+                {
+                    get => _v;
+                    set { if (value > 0) { if (value > 1) { if (value > 2) { _v = value; } } } }
+                }
+            }
+            """;
+
+        // The multi-line setter is present in the report (coverlet does NOT collapse it), all-0%.
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="demo.Sample" filename="Sample.cs">
+                      <methods>
+                        <method name="set_Danger" signature="(System.Int32)">
+                          <lines>
+                            <line number="8" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempRoot(root =>
+        {
+            string src = ScaffoldModule(root, "Foo", "Sample.cs", source);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, xml)));
+
+            int exit = app.Execute([src]);
+
+            exit.Should().Be(2);
+            error.ToString().Should().Contain("CRAP threshold exceeded");
+        });
+    }
+
+    // No spurious trip: a LOW-complexity same-line second accessor (CC 2) is promoted to 0% but CRAP =
+    // 2^2*(1-0)^3 + 2 = 6 <= 8, so the gate does NOT fire -> exit 0. Promotion enriches inputs; it does
+    // not manufacture a threshold breach.
+    [Fact]
+    public void LowComplexitySameLineSecondAccessorDoesNotTripGate()
+    {
+        const string source = """
+            namespace demo;
+            class Sample
+            {
+                int _v;
+                int Danger { get => _v; set { if (value > 0) { _v = value; } } }
+            }
+            """;
+
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="demo">
+                  <classes>
+                    <class name="demo.Sample" filename="Sample.cs">
+                      <methods>
+                        <method name="get_Danger" signature="()">
+                          <lines>
+                            <line number="5" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempRoot(root =>
+        {
+            string src = ScaffoldModule(root, "Foo", "Sample.cs", source);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, xml)));
+
+            int exit = app.Execute([src]);
+
+            exit.Should().Be(0);
+            error.ToString().Should().NotContain("CRAP threshold exceeded");
+        });
+    }
+
     private static void WithTempRoot(Action<string> test)
     {
         string root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

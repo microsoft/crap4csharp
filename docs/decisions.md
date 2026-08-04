@@ -38,6 +38,15 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
 | Coverage key | `TypeName#method#basename:line` — Roslyn enclosing-type **FQN** + method + source-file **basename** (T24, departure #12); `:line` stays LAST | C# allows many types per file **and** partial classes split one type across files, so overloads at overlapping min-lines collided; the FQN keys Cobertura, the basename segregates the per-file entries |
 | Module root | nearest **`.sln`** (fallback `.csproj` → project root) | so `dotnet test` actually runs tests — **SUPERSEDED at T17 by departure #9 (Model B): the owning unit is the nearest `.csproj` (bounded); `.sln` is no longer a marker** |
 
+> **CRAP magnitudes are NOT directly comparable to `crap4java`'s (T31b).** The CRAP *algorithm* is
+> identical (`CC² · (1 − coverage)³ + CC`), but the coverage INPUT differs: coverlet counts **line /
+> sequence points** (including brace-only and signature lines) whereas JaCoCo counts **instruction**
+> coverage. The same logical code therefore yields a different absolute coverage %, and — since CRAP is a
+> function of that % — a different CRAP **magnitude**. Do not compare a crap4csharp CRAP number to
+> crap4java's on the same source; only the within-tool ranking and the `> 8` gate semantics carry across.
+> (Aligns with the locked "Coverage" row's "absolute numbers differ, algorithm identical" note and risk
+> **R1**.)
+
 ## Ratified conventions (Mr. Das)
 
 - **C1 — Single production assembly.** All production code lives in one assembly, `src/Crap4CSharp`
@@ -1015,6 +1024,89 @@ narrow residual; appended to the T26 register). No exit-table row (D-T14a) moves
   tests pin literal-rename → `get_X`/`set_X` (block + expression-bodied) and the non-literal fallback →
   `get_Item`/`set_Item`.
 
+## T30 register — same-line-accessor coverlet-blind 0%-promotion; adds departure #15 (S12 differential-eval)
+
+Resolved decisions for T30 — the S12 hardening slice. A one-time two-oracle differential experiment
+(gpt-5.6-sol × claude-opus-4.8, each blindly authoring ~25 cases, cross-predicting, then capturing ground
+truth), reconciled by JARVIS + Anders, surfaced and **empirically confirmed** a gate-evasion false-negative
+— **coverlet #507**: coverlet is line-level and records only the FIRST accessor on a shared physical source
+line, dropping the rest from the cobertura XML. So an **uncalled same-line SECOND accessor with CC ≥ 3**
+renders `N/A`, is skipped by `MaxCrap`, and silently passes the exit-2 gate (confirmed via `gate_probe*.ps1`
+for property `{get;set}` [expr & block], indexer get/set, and event add/remove; multi-line accessors,
+finalizers, operators and standalone getters are all caught at real 0%). No coverlet config toggle exists.
+Mr. Das ruled **option (vi)** — a same-line-accessor 0%-promotion **with the type-present guard INCLUDED**
+— adding **departure #15** (same enrichment class as #2/#11/#13/#14). Entry map: **D-T30a** detection
+(start-line collision, superset-safe), **D-T30b** `CoverletBlind` plumbing (descriptor field; `MethodMetrics`
+unchanged), **D-T30c** promotion predicate + type-present guard, **D-T30d** tests + non-regression + accepted
+false-fail. No exit-table row (D-T14a) moves; the frozen `TypeName#method#basename:line` key and
+`NormalizeTypeName` are UNCHANGED. Build 0/0 Release, full suite green.
+
+- **D-T30a — detection: start-line collision, superset-safe (syntax-only; no `SemanticModel`).** In
+  `CSharpMethodParser.EmitAccessors`, an emitted (bodied) accessor is `CoverletBlind` **iff** its
+  declaration **start line** equals the start line of an EARLIER accessor of the same member (first-on-line
+  is never blind; the second+ sharing that line IS). Start line = `accessor.GetLocation()…StartLinePosition
+  .Line + 1` — the accessor KEYWORD line, IDENTICAL to `Emit`'s `StartLine`, NOT the body end — so a
+  same-line pair whose second body wraps over many lines is still blind, and a keyword on the next line is
+  never blind however far the property spans. Computed by threading a `HashSet<int>` of start-lines seen so
+  far while iterating `list.Accessors` in document order (`!seen.Add(startLine)`), so it is kind-agnostic
+  (`get`/`set`/`init`/`add`/`remove`) and reverse-order-safe (a leading `set` makes a trailing same-line
+  `get` blind). Auto/bodyless accessors hit `Emit`'s bodyless-skip and never become descriptors (C# forbids
+  mixing auto + manual accessors, so every EMITTED accessor is bodied); single-accessor members
+  (expression-bodied get-only property/indexer; every method/operator/conversion/finalizer) are never routed
+  through `EmitAccessors`. The flag may safely be a **SUPERSET** of the true #507 collapse set: promotion
+  (D-T30c) is separately gated on genuine absence, so an over-flag whose entry IS found never promotes.
+
+- **D-T30b — `CoverletBlind` plumbing: descriptor field only; `MethodMetrics` UNCHANGED.** `MethodDescriptor`
+  gains one trailing defaulted field `bool CoverletBlind = false` (the 2nd C#-only appended-last field after
+  `TypeName`, same pattern — every existing 5-arg construction/consumer compiles untouched, and full-record
+  equality keeps the non-accessor and separate-line tests passing at the defaulted `false`). `Emit` gains a
+  trailing `bool coverletBlind = false` forwarded straight into the descriptor; **only `EmitAccessors`** ever
+  passes a computed value — every other call site (`MethodDeclarationSyntax`, operators, conversions,
+  destructor, expression-bodied property/indexer `get_`) defaults to `false`. `MethodMetrics` is deliberately
+  **NOT** extended: the bit is a parser→analyzer signal consumed inside `Analyze` BEFORE the metric is built,
+  by which point coverage is already a real `0.0`, so the output record needs no new field — the descriptor
+  field is the single, desync-proof carrier (no parallel set to drift).
+
+- **D-T30c — promotion predicate + type-present guard.** In `CrapAnalyzer.Analyze`, BETWEEN the
+  `LookupCoverage` call and `CrapScore.Calculate`: `coverage is null && method.CoverletBlind &&
+  EnclosingTypePresent(coverageMap, method.TypeName, sourceFile) → coverage = 0.0`. Ordering is inherent —
+  `LookupCoverage` already encapsulates exact→nearest→null, so `coverage is null` means BOTH missed;
+  promotion fires strictly after. The real `0.0` then flows through `CrapScore.Calculate` (→ CRAP =
+  `CC²·(1−0)³ + CC`) into the output row and `MaxCrap`/gate, exactly like a natively-reported 0%.
+  `EnclosingTypePresent` (new `private static`, least-privilege — no test calls it directly, exercised
+  through `Analyze` like `ExactCoverage`) returns true iff `∃` map key `StartsWith(TypeName + "#", Ordinal)`
+  **AND** `Contains("#" + basename + ":", Ordinal)`, where `basename` is the SAME in-scope
+  `Path.GetFileName(file)` value `Analyze` uses to BUILD the frozen key (`TypeName#method#basename:line`,
+  T24 / departure #12) — NOT a full path. The `#` after `TypeName` is the exact-type delimiter (so `Foo`
+  never matches `FooBar#`/`Foo.Nested#`); `#basename:` bounds the basename segment. It runs ONLY for the rare
+  blind-AND-absent descriptor, so an O(keys) scan is fine (no precompute — YAGNI). **Guard rationale:** the
+  0% promotion ASSERTS "uninvoked within an INSTRUMENTED type"; the type-present signal is that evidence
+  (keeps within W4's spirit — never fabricate 0% for a type we have no evidence was instrumented). It never
+  weakens the fix — in every real escape the surviving FIRST accessor is present under the same
+  `TypeName`+`basename`, so the guard is satisfied where it matters; it only suppresses the pathological
+  enclosing-type-entirely-absent case (where `N/A` is correct).
+
+- **D-T30d — tests, non-regression, accepted false-fail.** Parser units **P-b1..8** pin the blind flag via
+  full-record equality (one-line expr/block, separate lines, keyword-share-with-body-wrap, indexer, event
+  one-line + multi-line, reverse-order first-on-line-wins, expression-bodied get-only). Analyzer units
+  **A-b1..5** exercise promotion through `Analyze` (the guard is private): absent-blind → promoted 0.0/CRAP
+  20; non-blind absent → stays `N/A`; blind but enclosing-type absent → guard suppresses → `N/A`; present@0%
+  → real value (promotion no-op); present & COVERED → real 100%/CRAP 4 (no spurious promotion). Integration
+  smokes in `CliApplicationTests` (FakeExecutor, no real `dotnet test`, so fast-suite / non-timing-sensitive)
+  cover one end-to-end exit-2 per empirically-confirmed escape shape (property block + expression setter,
+  indexer setter, event `remove`), a multi-line-setter regression (non-blind → caught at real 0% → exit 2,
+  promotion untouched), and a no-spurious-trip guard (CC 2 same-line second accessor → promoted 0% → CRAP 6
+  ≤ 8 → exit 0). **Non-regression / blast radius:** methods/operators/conversions/finalizers are
+  single-emission → never blind; multi-line accessors have distinct start lines → never blind; name-mangling
+  residuals (explicit-interface, non-literal/foreign `[IndexerName]` — #14 residual (b) / D-T28a) and
+  async/state-machine residuals are NOT line-collapse → NOT coverlet-blind → their ratified `N/A` is
+  preserved exactly. **Accepted new false-FAIL (Mr. Das):** a COVERED same-line CC ≥ 3 second accessor is
+  dropped by #507 regardless of hits → absent → promoted 0% → false exit 2. Accepted as fail-closed: it
+  needs the same rare same-line + CC ≥ 3 construction as the escape it closes PLUS the accessor actually
+  being tested, and it errs toward the gate firing. It is mechanically indistinguishable from the
+  escape-closed case (the report omits the entry either way), so it is documented here rather than given a
+  duplicate integration test; A-b5 pins the adjacent "entry present & covered → no spurious promotion" path.
+
 ## Deliberate departures from crap4java (approved by Mr. Das)
 
 1. **Fail fast** — when a module produces no coverage / runs no tests, exit non-zero (`1`) with a
@@ -1146,11 +1238,18 @@ narrow residual; appended to the T26 register). No exit-table row (D-T14a) moves
     once, no mutant loop), hence **out of scope**. **Knowing departure from crap4java parity:** crap4java
     ran **ALL** of a resolved module's tests (`mvn test`, no unit/integration split); #10 changes WHICH
     target tests execute (hence which coverage is produced), not crap4csharp's own analysis logic, and
-    is faithful to intent (exercise the code unit under analysis with its unit tests). A pathological
-    target whose entire suite is `type=IntegrationTests` yields no coverage → the existing report
-    fail-fasts fire (`No coverage report was produced` / `contained no coverage data`, exit 1) — **no
-    new exit code**. (Ruled by Mr. Das: reverses the earlier "all tests / no `--filter`" stance; carry
-    ONLY the `type!=IntegrationTests` clause.)
+    is faithful to intent (exercise the code unit under analysis with its unit tests). **Rationale
+    correction (T31a; empirically confirmed — SOL-25):** an earlier draft of this clause claimed a
+    pathological target whose entire suite is `type=IntegrationTests` "yields no coverage → the report
+    fail-fasts fire." That is WRONG. Coverlet instruments the analyzed target **regardless of which tests
+    match the `--filter`**, so even when the filter excludes every test the run still emits a **populated,
+    all-0%** cobertura report: `coverageMap.Count > 0`, so fail-fast **trigger 2 does NOT fire** (it
+    inspects `coverageMap.Count`, not hit counts — see **D-T14b**), no `contained no coverage data`
+    message is printed, and the run exits **0 unless some member's CRAP > 8** (a genuinely uncovered
+    high-CC member would still trip the exit-2 gate). The **behavior** of #10 is unchanged — the unit-only
+    `--filter` is exactly as specified; only this rationale prose is corrected. (Ruled by Mr. Das:
+    reverses the earlier "all tests / no `--filter`" stance; carry ONLY the `type!=IntegrationTests`
+    clause.)
 
 11. **Async/iterator coverage attribution (C#-specific)** — coverlet records a source async/iterator
     method's executable lines under its compiler-generated state-machine nested type
@@ -1250,6 +1349,42 @@ narrow residual; appended to the T26 register). No exit-table row (D-T14a) moves
     MAXIMAL scope + both extras — finalizers + custom event accessors; b-1 CLR-name keying; (a) documented
     safe-`N/A`; (b) literal case RESOLVED at T28, non-literal/explicit-interface a documented gate-evasion
     residual.)
+
+15. **Same-line-accessor coverlet-blind 0%-promotion (C#-ecosystem; coverlet #507; no crap4java
+    analog)** — coverlet is **line-level** and records only the FIRST accessor on a shared physical source
+    line, dropping the rest from the cobertura XML entirely (coverlet issue #507; **hit-independent, no
+    config toggle exists**). So an emitted property/indexer/event accessor whose declaration **start line**
+    equals an EARLIER accessor's of the same member is **structurally absent** from a populated report.
+    The T9 parser now flags such an accessor `CoverletBlind` at parse — start line = the accessor KEYWORD
+    line (identical to `Emit`'s `StartLine`), first-on-line wins, kind-agnostic
+    (`get`/`set`/`init`/`add`/`remove`); auto/bodyless accessors never become descriptors (#14) so never
+    blind, and single-accessor members (expression-bodied get-only property/indexer, every method/operator/
+    conversion/finalizer) are never routed through the shared-line detection. Detection may safely
+    OVER-flag (superset-safe): promotion is separately gated on genuine absence. The bit rides on a 2nd
+    C#-only appended-last `MethodDescriptor` field (`bool CoverletBlind = false`, after `TypeName`);
+    `MethodMetrics` is UNCHANGED (the bit is consumed inside `Analyze` before the metric is built). In
+    `CrapAnalyzer`, a `CoverletBlind` descriptor that misses BOTH exact and nearest lookup (`coverage is
+    null`) **AND** whose enclosing `TypeName#…#basename` is present in the populated map is scored **0.0%**
+    — a real measurement (uninvoked within an instrumented type) — instead of `N/A`, so an uncalled
+    **CC ≥ 3** same-line second accessor now yields CRAP ≥ 12, is picked up by `MaxCrap`, and trips the
+    exit-2 gate it previously escaped. The **type-present guard** (`∃` map key `StartsWith(TypeName + "#",
+    Ordinal)` && `Contains("#" + basename + ":", Ordinal)`) asserts the enclosing type WAS instrumented; it
+    only suppresses the pathological "enclosing type entirely absent from a populated report" case (where
+    `N/A` is correct — never fabricate 0% for an uninstrumented type, keeping within W4's spirit) and is
+    always satisfied where it matters (the surviving first accessor is present under the same
+    `TypeName`+`basename`). **Narrowly amends departure #1's per-method-`N/A` clause for exactly this
+    shape**; every OTHER absent-from-populated-report member stays `N/A` — name-mangling residuals
+    (explicit-interface, non-literal/foreign `[IndexerName]` — #14 residual (b) / D-T28a) and async/
+    state-machine residuals are NOT coverlet-blind and are untouched, and multi-line accessors / finalizers
+    / operators / standalone getters are still caught at real 0%. **Completes departure #14's promise**
+    that every body-bearing member participates in the gate. **Accepted new false-FAIL (fail-closed, Mr.
+    Das):** a COVERED same-line CC ≥ 3 second accessor is dropped by #507 **regardless of hits** →
+    absent → promoted to 0% → false exit 2. Accepted: it needs the same rare same-line + CC ≥ 3
+    construction as the escape it closes, PLUS the accessor actually being tested, and errs toward the
+    gate firing (fail-closed). Same enrichment class as departures #2/#11/#13/#14 (a C#-ecosystem
+    enrichment of the metric's inputs, faithful to crap4java's *intent* of scoring human-authored logic).
+    See the **T30 register** (D-T30a–d). (Ruled by Mr. Das: FIX via option (vi) — same-line-accessor
+    0%-promotion WITH the type-present guard INCLUDED.)
 
 ## Cyclomatic complexity — authoritative node set
 

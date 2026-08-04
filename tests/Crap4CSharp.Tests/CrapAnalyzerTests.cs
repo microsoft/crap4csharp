@@ -1257,6 +1257,251 @@ public class CrapAnalyzerTests
         });
     }
 
+    // T30 (docs/decisions.md departure #15 / D-T30c) -- the coverlet-blind 0%-promotion. A same-line
+    // second accessor (CoverletBlind) that coverlet #507 drops from the report is promoted to a real 0%
+    // (uninvoked within an instrumented type) instead of N/A, guarded by enclosing-type presence. These
+    // exercise the promotion end-to-end through Analyze (the guard helper is private, least-privilege).
+
+    // The blind fixture: get/set share line 5, so set_Danger is CoverletBlind; its body has three nested
+    // ifs -> CC 4 (the gate-relevant escape). Touch is a plain sibling method. Written as Sample.cs, so
+    // TypeName Demo.Sample + basename Sample.cs.
+    private const string BlindDangerSource = """
+        namespace Demo;
+        class Sample
+        {
+            int _v;
+            int Danger { get => _v; set { if (value > 0) { if (value > 1) { if (value > 2) { _v = value; } } } } }
+            int Touch() => _v;
+        }
+        """;
+
+    // A-b1 -- set_Danger (blind, CC 4) is ABSENT from a report that holds get_Danger + Touch under the
+    // same type/file (coverlet #507). Promotion to a real 0% -> CRAP = 4^2*(1-0)^3 + 4 = 20, a scored row
+    // (not N/A), so the uncalled setter now participates in the gate.
+    [Fact]
+    public void PromotesBlindAccessorAbsentFromPopulatedReportToRealZero()
+    {
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Sample" filename="Sample.cs">
+                      <methods>
+                        <method name="get_Danger" signature="()">
+                          <lines>
+                            <line number="5" hits="1" />
+                          </lines>
+                        </method>
+                        <method name="Touch" signature="()">
+                          <lines>
+                            <line number="6" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Sample.cs", BlindDangerSource);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            MethodMetrics setter = result.Single(m => m.MethodName == "set_Danger");
+            setter.Complexity.Should().Be(4);
+            setter.CoveragePercent.Should().NotBeNull();
+            setter.CoveragePercent!.Value.Should().BeApproximately(0.0, 1e-9);
+            setter.CrapScore!.Value.Should().BeApproximately(20.0, 1e-9);
+
+            // The surviving first accessor keeps its real measurement (it is present in the report).
+            result.Single(m => m.MethodName == "get_Danger").CoveragePercent.Should().NotBeNull();
+        });
+    }
+
+    // A-b2 -- an otherwise-identical setter on its OWN line is NOT blind, so an absent entry stays N/A
+    // (W4) -- promotion never fires for a non-blind descriptor.
+    [Fact]
+    public void DoesNotPromoteNonBlindAccessorAbsentFromPopulatedReport()
+    {
+        const string source = """
+            namespace Demo;
+            class Sample
+            {
+                int _v;
+                int Danger
+                {
+                    get => _v;
+                    set { if (value > 0) { if (value > 1) { if (value > 2) { _v = value; } } } }
+                }
+                int Touch() => _v;
+            }
+            """;
+
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Sample" filename="Sample.cs">
+                      <methods>
+                        <method name="get_Danger" signature="()">
+                          <lines>
+                            <line number="7" hits="1" />
+                          </lines>
+                        </method>
+                        <method name="Touch" signature="()">
+                          <lines>
+                            <line number="10" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Sample.cs", source);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            MethodMetrics setter = result.Single(m => m.MethodName == "set_Danger");
+            setter.Complexity.Should().Be(4);
+            setter.CoveragePercent.Should().BeNull();
+            setter.CrapScore.Should().BeNull();
+        });
+    }
+
+    // A-b3 -- the type-present guard: set_Danger is blind but Demo.Sample is ENTIRELY absent from a
+    // populated report (only an unrelated type is instrumented), so promotion is suppressed and the
+    // setter stays N/A (fabricating 0% for an uninstrumented type would be wrong -- W4's spirit).
+    [Fact]
+    public void SuppressesPromotionWhenEnclosingTypeAbsentFromPopulatedReport()
+    {
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Other" filename="Other.cs">
+                      <methods>
+                        <method name="Run" signature="()">
+                          <lines>
+                            <line number="3" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Sample.cs", BlindDangerSource);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            MethodMetrics setter = result.Single(m => m.MethodName == "set_Danger");
+            setter.CoveragePercent.Should().BeNull();
+            setter.CrapScore.Should().BeNull();
+        });
+    }
+
+    // A-b4 -- when the blind setter IS present in the report (at 0%), lookup returns the real value and
+    // promotion is a no-op (coverage is not null): CRAP 20 via the normal path, not via promotion.
+    [Fact]
+    public void UsesRealValueWhenBlindAccessorPresentAtZeroCoverage()
+    {
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Sample" filename="Sample.cs">
+                      <methods>
+                        <method name="set_Danger" signature="(System.Int32)">
+                          <lines>
+                            <line number="5" hits="0" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Sample.cs", BlindDangerSource);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            MethodMetrics setter = result.Single(m => m.MethodName == "set_Danger");
+            setter.CoveragePercent!.Value.Should().BeApproximately(0.0, 1e-9);
+            setter.CrapScore!.Value.Should().BeApproximately(20.0, 1e-9);
+        });
+    }
+
+    // A-b5 -- the distinguishing case: the blind setter is present AND COVERED (100%), so it keeps its
+    // real coverage -> CRAP 4. Promotion must NOT spuriously fire (that would force 0% -> CRAP 20).
+    [Fact]
+    public void KeepsRealCoverageWhenBlindAccessorPresentAndCovered()
+    {
+        const string xml = """
+            <?xml version="1.0"?>
+            <coverage>
+              <packages>
+                <package name="Demo">
+                  <classes>
+                    <class name="Demo.Sample" filename="Sample.cs">
+                      <methods>
+                        <method name="set_Danger" signature="(System.Int32)">
+                          <lines>
+                            <line number="5" hits="1" />
+                          </lines>
+                        </method>
+                      </methods>
+                    </class>
+                  </classes>
+                </package>
+              </packages>
+            </coverage>
+            """;
+
+        WithTempDir(dir =>
+        {
+            string sourcePath = WriteFile(dir, "Sample.cs", BlindDangerSource);
+            string cobertura = WriteFile(dir, "coverage.cobertura.xml", xml);
+
+            IReadOnlyList<MethodMetrics> result = CrapAnalyzer.Analyze([sourcePath], cobertura);
+
+            MethodMetrics setter = result.Single(m => m.MethodName == "set_Danger");
+            setter.CoveragePercent!.Value.Should().BeApproximately(100.0, 1e-9);
+            setter.CrapScore!.Value.Should().BeApproximately(4.0, 1e-9);
+        });
+    }
+
     private static void WithTempDir(Action<string> test)
     {
         string dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

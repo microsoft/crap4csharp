@@ -33,7 +33,9 @@ public static class CSharpMethodParser
         // Java's getBody() == null), then StartLine (the emitted node's own decl start), EndLine (body
         // end) and the augmented CC over the member's own body. declNode drives both StartLine and the
         // enclosing-type FQN, so a single descriptor path serves methods, accessors, operators, etc.
-        void Emit(SyntaxNode declNode, SyntaxNode? blockBody, SyntaxNode? exprBody, string name)
+        // coverletBlind (T30, departure #15) is forwarded straight into the descriptor: only EmitAccessors
+        // ever passes true (a same-line second accessor); every other call site defaults it to false.
+        void Emit(SyntaxNode declNode, SyntaxNode? blockBody, SyntaxNode? exprBody, string name, bool coverletBlind = false)
         {
             if (blockBody is null && exprBody is null)
             {
@@ -50,13 +52,20 @@ public static class CSharpMethodParser
                 StartLine: startLine,
                 EndLine: endLine,
                 Complexity: ComplexityWalker.Count(body),
-                TypeName: TypeNameOf(declNode)));
+                TypeName: TypeNameOf(declNode),
+                CoverletBlind: coverletBlind));
         }
 
         // Emits one row per bodied accessor, with the accessor's OWN decl start as StartLine (the
         // nearest-line disambiguator against coverlet's per-accessor min-line). memberName carries the
         // declaring member's name ("Item" for indexers, the CLR default); the prefix maps get/set/init/
         // add/remove to the CLR method spelling. init lowers to set_, so both share the set_ prefix.
+        // T30 (departure #15) coverlet-blind detection: coverlet #507 records only the FIRST accessor on
+        // a shared physical source line and drops the rest from the cobertura XML, so an accessor whose
+        // decl start line was ALREADY seen on an EARLIER accessor of this member is flagged blind (kind-
+        // agnostic; first-on-line wins). Start line is the accessor KEYWORD line (identical to Emit's
+        // StartLine), NOT the body end, so a same-line pair whose second body wraps is still blind. The
+        // flag may safely OVER-flag (superset-safe): promotion is separately gated on genuine absence.
         void EmitAccessors(AccessorListSyntax? list, string memberName)
         {
             if (list is null)
@@ -64,12 +73,16 @@ public static class CSharpMethodParser
                 return;
             }
 
+            HashSet<int> startLinesSeen = [];
             foreach (AccessorDeclarationSyntax accessor in list.Accessors)
             {
+                int startLine = accessor.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+                bool coverletBlind = !startLinesSeen.Add(startLine);
+
                 string? prefix = AccessorPrefix(accessor);
                 if (prefix is not null)
                 {
-                    Emit(accessor, accessor.Body, accessor.ExpressionBody, prefix + memberName);
+                    Emit(accessor, accessor.Body, accessor.ExpressionBody, prefix + memberName, coverletBlind);
                 }
             }
         }
