@@ -528,15 +528,68 @@ the invariants.
   D-T12e `ResultsDirectoryName` reciprocal contract and coverage-base = `_projectRoot` are preserved. The
   decoupling INTENT survives (coverage/locate take a pre-resolved root and never resolve on their own).
 
-- **D-T28c — Finding 7 (S6 re-run #3): `TestProjectResolver` does no MSBuild evaluation (ACCEPTED
-  LIMITATION; documented at T28, fix scheduled T29).** `TestProjectResolver` resolves `ProjectReference`
-  closures by RAW-XML parse (`XDocument`) with NO MSBuild property evaluation, so a valid test project
-  whose `ProjectReference` path uses an MSBuild property (e.g. `$(RepoRoot)`,
-  `$(MSBuildThisFileDirectory)`) fails transitive resolution → `Execute` fail-fasts with the clean
-  `No test project` message (exit 1). This is FAIL-SAFE (no mis-scoring, no false pass; distinct from the
-  D-T17e malformed-`.csproj` case, which is an XML fault) and therefore ACCEPTED for now. **T29 (scheduled
-  fast-follow):** resolve a small common MSBuild-property set so legitimate monorepo targets resolve.
-  (Placed in the T17 resolver register for context; authored at T28.)
+- **D-T28c — Finding 7 (S6 re-run #3): `TestProjectResolver` MSBuild-property evaluation (RESOLVED at
+  T29 → D-T29a).** `TestProjectResolver` resolves `ProjectReference` closures by RAW-XML parse
+  (`XDocument`), so PRE-T29 a valid test project whose `ProjectReference` path used an MSBuild property
+  (e.g. `$(RepoRoot)`, `$(MSBuildThisFileDirectory)`) failed transitive resolution → `Execute` fail-fasted
+  with the clean `No test project` message (exit 1). Documented at T28 as an ACCEPTED, FAIL-SAFE limitation
+  (no mis-scoring, no false pass; distinct from the D-T17e malformed-`.csproj` case, which is an XML fault).
+  **RESOLVED at T29 (see D-T29a)** for the intrinsic ten + a bounded user-defined property set
+  (`Directory.Build.props` ancestor chain + the csproj body). **Residuals (deferred, still FAIL-SAFE):**
+  `.sln`-synthesized `$(SolutionDir)`, non-self-guard `Condition`s, property functions (`$([…]::…)`),
+  item/metadata (`@(…)` / `%(…)`), env/global props (`$(Configuration)`, …), `<Import>` chains,
+  `Directory.Build.targets` (auto-imported like `Directory.Build.props`, not via a literal `<Import>`), and
+  `Directory.Build.props` files above the invocation root — each stays a VERBATIM `$(...)` token →
+  non-existent path → dropped edge → closure misses → clean exit 1. (Placed in the T17 resolver register
+  for context; authored at T28, updated at T29.)
+
+- **D-T29a — Finding 7 fix (O2): bounded MSBuild-property evaluation before `ProjectReference` matching.**
+  `TestProjectResolver` (now `public static partial`, hosting the `[GeneratedRegex]` methods per the
+  `CoberturaCoverageParser` idiom; NO `internal`, NO NuGet, NO `Microsoft.Build.*` — BCL
+  `System.Text.RegularExpressions` only) evaluates a bounded MSBuild-property set and expands `$(...)`
+  tokens in each `ProjectReference Include` BEFORE the existing `.Replace('\\','/')` → `Path.Combine` →
+  `Path.GetFullPath` tail (the sole insertion point, inside the `ReadProjectReferences` helper — which the
+  memoized `DirectProjectReferences` calls — after `XDocument.Load` succeeds). No public-API change; NO
+  static mutable state — a per-`ResolveTestProject`-call
+  `ResolutionContext` (invocation root + a `ProjectReference`-closure memo) is threaded as a parameter. Two
+  stages:
+  - **Stage 1 — resolved property map (`name → value`) for csproj N.** Base = the **file-scoped intrinsic
+    ten**: `MSBuildThisFile*` is scoped to the file that DEFINES the property being expanded (a specific
+    `Directory.Build.props`, or N), while `MSBuildProject*` = N ALWAYS — this is exactly why
+    `RepoRoot=$(MSBuildThisFileDirectory)` in a repo-root `Directory.Build.props` resolves to the repo root,
+    not N's dir. Load-bearing (pinned by tests): `MSBuildThisFileDirectory` carries a TRAILING separator;
+    `MSBuildProjectDirectory` does NOT. User definitions are collected in MSBuild precedence order — the
+    **`Directory.Build.props` chain from the outermost ancestor at/under the invocation root down to the
+    nearest, then N's own `<PropertyGroup>`s** (csproj body overrides props files; last-writer-wins) — then
+    fixpoint-expanded to terminal values (un-memoized DFS — the only memoization is the per-project
+    resolved-reference list; base case = the file-scoped intrinsics; an in-progress set leaves
+    cyclic/self-referential tokens VERBATIM; a depth cap of 64 is a belt-and-suspenders guard against a
+    pathological deep linear chain). Deterministic — a pure function of
+    the ordered map. N's intrinsics overlay the resolved map (intrinsics win).
+  - **Stage 2 — one regex pass** (`[GeneratedRegex(@"\$\(([^)]+)\)")]`) over the raw `Include`: a known
+    property name → its value; an UNKNOWN name → the token retained VERBATIM (`m.Value`). No fixpoint here
+    (Stage 1 already drove props to terminal values).
+  - **Condition rule:** a `Condition` on a `<PropertyGroup>` or property element is honored ONLY when it is
+    exactly the self-emptiness guard `'$(X)'==''` naming the property's OWN name X (apply the def iff X is
+    not yet set); EVERY other condition → the definition is SKIPPED (fail-safe). The reversed form
+    `''=='$(X)'` is not matched.
+  - **`$(SolutionDir)`: explicit-def ONLY** — no `.sln` walk/synthesis (honors departure #9's `.sln`
+    retirement); an undefined `$(SolutionDir)` stays a documented fail-safe residual (→ verbatim → dropped).
+  - **Property NAMES compare `OrdinalIgnoreCase`** (MSBuild semantics) — the ONLY `OrdinalIgnoreCase` in the
+    resolver; all path VALUES, sets, sorts, and tie-breaks stay `StringComparer.Ordinal` (departure #3
+    intact; called out in a code comment so it is not misread as a #3 regression).
+  - **No-throw / fail-safe (non-negotiable):** every uncertain branch (undefined, unknown, non-self-guard
+    condition, cyclic, self-referential, depth-capped, `$(SolutionDir)` without explicit def, property
+    functions `$([…]::…)`, item/metadata `@(…)` / `%(…)`, env/global props) degrades to a VERBATIM `$(...)`
+    token → non-existent path → dropped edge → clean exit 1; it NEVER throws, NEVER guesses a match, NEVER
+    mis-scores. New I/O = the `Directory.Build.props` reads: each parse wraps `catch (XmlException) → []`
+    EXACTLY like the D-T17e csproj discipline (a malformed props file contributes ZERO properties; valid
+    siblings still apply; `XmlException` only — CA1031-clean, no suppression). Genuine FS faults
+    (`IOException` / `UnauthorizedAccessException`) still PROPAGATE to the T20 `Program.Main` catch-all. The
+    props walk is a fixed-filename parent chain (`File.Exists`, no glob) → no enumeration-order ambiguity.
+    `ResolveTestProject` enumeration, `ReferencesTransitively` BFS, bin/obj exclusion, ordinal-first
+    tie-break, and the cycle visited-set are UNCHANGED. Folds under departure #9 (no new departure number);
+    see D-T28c for the residual list.
 
 ## T21 register — Async/iterator coverage attribution; S8 close-out (Anders T21 review, 🟢)
 
@@ -1058,7 +1111,11 @@ narrow residual; appended to the T26 register). No exit-table row (D-T14a) moves
    `<Project>.UnitTests.csproj` whose `ProjectReference`s **transitively** include the owning project,
    found by the new `TestProjectResolver` (recursive `.csproj` scan under the root, `bin`/`obj` excluded
    per departure #5, cycle-safe transitive walk, ordinal-first tie-break, non-throwing on
-   missing/malformed `.csproj`). Coverage then runs **once** against that ONE test project, producing
+   missing/malformed `.csproj`). **(T29:** #9's resolver now evaluates a bounded intrinsic + user-defined
+   MSBuild property set — the file-scoped intrinsic ten plus the `Directory.Build.props` ancestor chain and
+   the csproj body — before matching `ProjectReference` Includes, fail-safe throughout (any unevaluable
+   token stays verbatim → dropped edge → clean exit 1); see D-T29a.**)** Coverage then runs **once** against
+   that ONE test project, producing
    exactly ONE `coverage.cobertura.xml`. **New fail-fasts (exit 1 — our convention, NOT mutate4csharp's
    2; realizes departure #1), all fired BEFORE any coverage run:** `No owning .csproj` (no owner within
    bounds); `span multiple projects` (analyzed files resolve to >1 owning project — **Mr. Das ruled
