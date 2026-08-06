@@ -152,3 +152,11 @@ dotnet_diagnostic.SA1135.severity = none
 
 # IDE0305: Simplify collection initialization
 dotnet_diagnostic.IDE0305.severity = warning
+
+# CA1031: Do not catch general exception types. Scoped relaxation for the CLI entry point ONLY.
+# Program.Main is the top-level boundary that ports Java's `main throws Exception`: it deliberately
+# catches every escaping exception and converts it to process exit 1 (.NET, unlike the JVM, does not
+# guarantee exit 1 on an unhandled exception). This is the sole sanctioned catch-all; no other file is
+# affected, and no #pragma / [SuppressMessage] is used. Ruled by Mr. Das (T20).
+[Program.cs]
+dotnet_diagnostic.CA1031.severity = none

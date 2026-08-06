@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Crap4CSharp\Crap4CSharp.csproj" />
+  </ItemGroup>
+
+  <Import Project="..\..\Crap4CSharp.Tests.Common.targets" />
+
+</Project>
