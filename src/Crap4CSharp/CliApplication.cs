@@ -1,11 +1,12 @@
 namespace Microsoft.Crap4CSharp;
 
 using System.Globalization;
+using System.Text.Json;
 
 // Faithful port of crap4java's CliApplication, adapted per docs/decisions.md departures #1 (fail-fast),
 // #7 (resolve-once), and #9/#10 (Model B resolution + unit-only target-test filter). Orchestrates: parse
 // args -> pick files -> resolve the ONE owning project (bounded) -> fail-fast on absence/span -> resolve the
-// test project -> fail-fast on absence -> run coverage ONCE -> locate ONCE -> fail-fast gate -> parse ->
+// selected test projects -> preflight ALL -> run sequentially -> locate each -> fail-fast gate -> union ->
 // analyze -> format -> print -> threshold. Composes shipped types only (OwningProjectResolver,
 // TestProjectResolver, CoverageRunner, CoverageReportLocator, CoberturaCoverageParser, CrapAnalyzer,
 // ReportFormatter); contains no resolution/coverage/parse internals of its own.
@@ -19,6 +20,24 @@ public sealed class CliApplication
           crap4csharp --changed  Analyze changed C# files under src/
           crap4csharp <path...>  Analyze files, or for directory args analyze <dir>/src/**/*.cs
           crap4csharp --help     Print this help message
+
+        Options (may occur among paths or with --changed):
+          --test-project <path-or-glob>  Repeatable; referencing test .csproj paths inside the root
+                                  Quote globs: "tests/**/*.Tests.csproj"; / separators, *, ?, **
+                                  Ordinal case-sensitive matching; ** spans zero or more directories
+                                  Selected suites combine into ONE line-union CRAP report
+          --test-filter <expr>     Replace the default VSTest filter (type!=IntegrationTests)
+          --all-tests              Run without a filter; conflicts with --test-filter
+          --crap-threshold <n>     Finite nonnegative threshold (default 8.0); strict > fails
+          --framework <tfm>        Run one target framework
+          --dry-run                Print every project, results directory and exact command; no execution
+
+        Examples (one owning source project, one combined report):
+          crap4csharp src/Foo/Service.cs --test-project "tests/**/*.Tests.csproj"
+          crap4csharp --test-project tests/A.csproj --test-project tests/B.csproj
+
+        Without selectors, automatic naming still rejects ambiguous test projects.
+        Every selector/match must be valid; any suite failure prevents a CRAP report.
         """;
 
     private readonly string _projectRoot;
@@ -85,63 +104,101 @@ public sealed class CliApplication
         }
 
         string owningProject = owningProjects[0];
-        string? testProject = TestProjectResolver.ResolveTestProject(owningProject, _projectRoot);
-        if (testProject is null)
+        IReadOnlyList<string> testProjects;
+        IReadOnlyList<CoverageRun> runs;
+        try
+        {
+            testProjects = TestProjectResolver.ResolveTestProjects(owningProject, _projectRoot, parsed.TestProjects);
+            runs = CoverageRunner.PlanCoverage(testProjects, _projectRoot, parsed);
+        }
+        catch (ArgumentException ex)
+        {
+            _error.WriteLine(ex.Message);
+            return 1;
+        }
+        catch (CoverageException ex)
+        {
+            _error.WriteLine(ex.Message);
+            return 1;
+        }
+
+        if (testProjects.Count == 0)
         {
             string project = Path.GetFileNameWithoutExtension(owningProject);
             _error.WriteLine($"No test project was found for '{owningProject}' (expected {project}.Tests.csproj or {project}.UnitTests.csproj transitively referencing it, under '{_projectRoot}').");
             return 1;
         }
 
-        _coverageRunner.GenerateCoverage(testProject, _projectRoot);
+        if (parsed.DryRun)
+        {
+            _output.WriteLine("Selected files: " + JsonSerializer.Serialize(filesToAnalyze));
+            _output.WriteLine("Owning project: " + owningProject);
+            _output.WriteLine("Filter: " + (parsed.AllTests ? "none" :
+                parsed.TestFilter is null ? "default: type!=IntegrationTests" : "custom: " + parsed.TestFilter));
+            _output.WriteLine("CRAP threshold: " + parsed.CrapThreshold.ToString("R", CultureInfo.InvariantCulture));
+            _output.WriteLine("Framework: " + (parsed.Framework ?? "project default; no framework override"));
+            _output.WriteLine("Invocation cwd: " + _projectRoot);
+            foreach (CoverageRun run in runs)
+            {
+                _output.WriteLine("Test project: " + run.TestProject);
+                _output.WriteLine("Results directory: " + run.ResultsDirectory);
+                _output.WriteLine("Command: " + JsonSerializer.Serialize(run.Command));
+            }
+
+            return 0;
+        }
+
+        _coverageRunner.GenerateCoverageRuns(runs, _projectRoot);
 
         // CoverageRunner deletes coverage/ before the run, so every report here is from THIS run: exactly
         // one for a single-TFM test project, one-per-TFM for a multi-targeted one.
-        IReadOnlyList<string> reports = CoverageReportLocator.LocateAll(_projectRoot);
-
-        // FAIL-FAST TRIGGER 1 (departure #1): no report produced at all.
-        if (reports.Count == 0)
+        List<string> reports = [];
+        foreach (CoverageRun run in runs)
         {
-            _error.WriteLine($"No coverage report was produced under '{_projectRoot}'. Ensure the test project references coverlet.collector so 'dotnet test --collect' emits coverage.cobertura.xml.");
-            return 1;
-        }
+            string directory = Path.Combine(_projectRoot, run.ResultsDirectory);
+            IReadOnlyList<string> projectReports = CoverageReportLocator.LocateInResultsDirectory(directory);
+            if (projectReports.Count == 0)
+            {
+                _error.WriteLine($"No coverage report was produced under '{directory}' for '{run.TestProject}'. Ensure the test project references coverlet.collector so 'dotnet test --collect' emits coverage.cobertura.xml.");
+                return 1;
+            }
 
-        // FAIL-FAST TRIGGER (T22, finding #4): >1 report ⇒ a multi-targeted (<TargetFrameworks>) test
-        // project emits one coverage.cobertura.xml per TFM; a nondeterministic single-pick flips the exit
-        // code across runs on unchanged code, so refuse deterministically (same ethos as the
-        // span-multiple-projects fail-fast, #9).
-        if (reports.Count > 1)
-        {
-            _error.WriteLine($"Found multiple coverage reports under '{_projectRoot}' ({string.Join(", ", reports)}); a multi-targeted test project (<TargetFrameworks>) emits one coverage.cobertura.xml per target framework, which crap4csharp does not support. Use a single <TargetFramework> for the test project.");
-            return 1;
-        }
+            if (projectReports.Count > 1)
+            {
+                _error.WriteLine($"Found multiple coverage reports under '{directory}' ({string.Join(", ", projectReports)}); exactly one report is required per test project. For a multi-targeted test project, select one target with --framework <tfm>.");
+                return 1;
+            }
 
-        string report = reports[0];
+            reports.Add(projectReports[0]);
+        }
 
         // FAIL-FAST TRIGGER 2 (departure #1): a report was produced but carries no coverage data. Inspect
         // the parsed map's emptiness -- NOT the metrics: a populated-but-non-matching report ALSO yields
         // all-N/A metrics yet must not fail-fast (that per-method N/A path lives in CrapAnalyzer, unchanged).
-        IReadOnlyDictionary<string, CoverageData> coverageMap = CoberturaCoverageParser.Parse(report);
+        // Preserve legacy body/synthetic counters for a singleton; physical-line union is for multiple suites.
+        IReadOnlyDictionary<string, CoverageData> coverageMap = reports.Count == 1
+            ? CoberturaCoverageParser.Parse(reports[0])
+            : CoberturaCoverageParser.ParseReports(reports);
         if (coverageMap.Count == 0)
         {
-            _error.WriteLine($"Coverage report '{report}' contained no coverage data. Failing fast.");
+            _error.WriteLine($"A coverage report contained no coverage data ({string.Join(", ", reports)}). Failing fast.");
             return 1;
         }
 
-        // CrapAnalyzer re-parses `report` (locked double-parse, option A): negligible cost, zero API change.
-        IReadOnlyList<MethodMetrics> metrics = CrapAnalyzer.Analyze(filesToAnalyze, report);
+        IReadOnlyList<MethodMetrics> metrics = CrapAnalyzer.AnalyzeCoverage(filesToAnalyze, coverageMap);
 
         // The report already ends with '\n' and is already sorted by both CrapAnalyzer and ReportFormatter,
         // so the Java pre-format sort is redundant and omitted (behavior-preserving; MaxCrap is order-free).
         _output.Write(ReportFormatter.Format(metrics));
 
         double max = MaxCrap(metrics);
-        if (ThresholdExceeded(max))
+        if (ThresholdExceeded(max, parsed.CrapThreshold))
         {
             _error.WriteLine(string.Format(
                 CultureInfo.InvariantCulture,
-                "CRAP threshold exceeded: {0:F1} > 8.0",
-                max));
+                "CRAP threshold exceeded: {0:R} > {1:R}",
+                max,
+                parsed.CrapThreshold));
             return 2;
         }
 
@@ -150,6 +207,8 @@ public sealed class CliApplication
 
     // Ports thresholdExceeded: strict '>' against 8.0 via CompareTo (Java's Double.compare analog).
     public static bool ThresholdExceeded(double max) => max.CompareTo(8.0) > 0;
+
+    public static bool ThresholdExceeded(double max, double threshold) => max.CompareTo(threshold) > 0;
 
     // Ports Main.maxCrap: the largest non-null CrapScore, or 0.0 when every method is N/A.
     public static double MaxCrap(IReadOnlyList<MethodMetrics> metrics)

@@ -18,11 +18,109 @@ Preserved verbatim from `crap4java`. For a method with cyclomatic complexity `CC
 fraction `coverage ∈ [0, 1]`:
 
 - **Formula:** `CRAP = CC² · (1 − coverage)³ + CC`
-- **Threshold:** a method is flagged **crappy** when `CRAP > 8.0`.
+- **Threshold:** a method is flagged **crappy** when its unrounded `CRAP > threshold`, default `8.0`.
+  `--crap-threshold` configures the threshold (approved selection/threshold scope below).
 
-The formula and threshold are unchanged from `crap4java`; only `CC` is computed with the augmented
-node set below (an approved departure), so absolute CRAP scores are not numerically comparable to
-`crap4java` on code using the modern constructs.
+The formula and default threshold are unchanged from `crap4java`; configurable thresholds and augmented
+`CC` are approved departures. Absolute CRAP scores are not numerically comparable to `crap4java`.
+
+## Current CLI contract — approved selection/threshold and multi-test-project scope
+
+Mr. Das approved the first scope: explicit test-project selection, native filtering, configurable
+threshold, one requested framework, and side-effect-free dry-run diagnostics, then explicitly approved
+"let's add Glob patterns and multiple test projects": **one combined line-union report, still one
+owning source project per run**. This section supersedes
+older fixed-threshold, ordinal-first test-candidate, always-unit-only, and multi-TFM restriction text
+where applicable, including historical singleton-test resolution / once-per-run execution and deferred
+aggregation in departures #7–#9/T17/T22. Historical audit registers below remain historical;
+owning-project resolution, formula, frozen coverage keys, and report formatting are unchanged.
+
+- **Typed options:** extend `CliArguments`; `CliApplication` retains orchestration/exit policy,
+  `TestProjectResolver` retains graph validation, and `CoverageRunner` owns one shared pure token
+  builder used by both preview and execution. Existing public overloads remain usable. No new assembly,
+  CLI framework, arbitrary runner arguments, configuration switches, or solution analysis.
+  `TestProjects` is a nonnull selector collection; legacy `TestProject` init/get views that same
+  selection as a singleton rather than storing a conflicting path.
+- **Test selection (departure from Model B automatic ordinal-first selection):**
+  repeatable `--test-project <path-or-glob>` consumes one value per occurrence. Root-relative quoted
+  globs support segment `*`, segment `?`, and whole-segment `**` (zero or more directories), using pinned
+  DotNet.Glob rather than a custom regex engine. Normalize user backslashes to `/`; match the entire
+  relative path ordinally/case-sensitively. No absolute globs, escaping `..`, exclusions, character classes,
+  braces or other glob syntax. Absolute in-root literal paths remain valid. Each selector must independently
+  match at least one eligible project, and **every** match must be an existing in-root `.csproj` outside
+  `bin`/`obj` with direct/transitive reference reachability via the existing bounded property/cycle graph.
+  Nonreferencing matches fail rather than being silently dropped; explicit names are unrestricted.
+  Enumeration does not descend through links/build outputs; paths and graph edges cannot escape via links,
+  and graph traversal does not read out-of-root edges. Sort normalized absolute paths ordinally and dedup
+  across selectors. Invalid selection fails exit 1 without fallback. **No explicit selectors:** automatic
+  naming stays `<Owner>.Tests`/`<Owner>.UnitTests`; more than one candidate still fails with the sorted
+  ambiguity message and `--test-project` hint. There is no implicit increase in tests run by default.
+- **Execution/aggregation (approved extension of Model B):** pre-resolve the entire selection and
+  validate all selected VSTest routing before any command or deletion. Clear root `coverage/` once.
+  Run once per ordinal project, sequentially, no retries/implicit parallelism. A singleton keeps `coverage`;
+  multiple projects get `coverage/project-0001`, `coverage/project-0002`, … (indices, not basenames).
+  Preview and execution consume the same planned token vectors. Apply identical effective options to all.
+  Each scoped results directory must produce exactly one canonical report after its own TRX-declared
+  deployment-copy exclusion; >1 **within one project** remains the framework ambiguity failure.
+  Any command/native-diagnostic/report failure exits 1 without a normal CRAP report or partial success/
+  threshold result; partial artifacts may remain. Each report independently requires usable coverage.
+- **Line union:** `ParseReports(paths)` shares the existing parser/attribution core, privately retains
+  line observations, and collects direct anchors from **all** reports before synthetic folding.
+  The CLI uses legacy `Parse(path)` for one selected suite (automatic or explicit), preserving distinct
+  body/synthetic hit/miss counters even on the same source line; only multiple selected suites use
+  `ParseReports`. The latter API retains physical-line union semantics even for a singleton input.
+  Per attributed member, union executable line identities: covered iff any suite hits, unique observed
+  lines denominator. Never average percentages, add final counters, or take maximum percentages.
+  Direct signature metadata aligns the same member when observed minimum lines differ; no type+name-only
+  cross-overload union. Frozen `TypeName#method#basename:line`, per-file overload segregation, nested/generic
+  normalization, MoveNext/lambda/local/async-local attribution and nearest-body strict-distance rules remain.
+  Multi-report anchor/contribution enumeration is canonical by line then ordinal identity for report-order
+  independence; singleton `Parse` retains its document-order behavior and null/missing/skip observables.
+  Zero observations stay zero; missing from one suite never erases present coverage, missing everywhere
+  stays N/A. Accessor blind-zero promotion happens only in the analyzer **after** aggregation.
+  `CoverageData` remains final core counters; no merged XML artifact. Existing `Parse(path)` and
+  `Analyze(files,path)` APIs remain; `AnalyzeCoverage(files,map)` avoids null-overload ambiguity.
+- **Filtering (extension of departure #10):** no-flags default remains
+  `type!=IntegrationTests`, including untagged tests. Nonblank `--test-filter` **replaces** the default,
+  forwarded byte-for-byte as one `ArgumentList` token, with no native-expression parser.
+  `--all-tests` omits the pair and conflicts with a custom filter. Runner failures propagate; never
+  retry unfiltered. The shared command adds `--logger trx;LogFilePrefix=crap4csharp-native` for
+  collision-free per-framework/run TRX files under each assigned results directory. Native
+  RunInfo errors and `Exception filtering tests` warnings raise `CoverageException` before reporting,
+  even when the adapter returns exit 0. Missing/unreadable/malformed diagnostics fail explicitly.
+  Report discovery excludes only deployment-copy directories declared by these tool-owned TRX files,
+  not independently emitted Coverlet reports; exclusion cannot leak between project directories.
+- **Threshold (approved departure from fixed Java CLI threshold):** default 8.0; invariant numeric
+  parsing without thousands separators, finite and nonnegative only. Strict unrounded maximum greater
+  than the configured value yields exit 2; equality passes. All-N/A maximum stays zero. Diagnostics
+  retain `CRAP threshold exceeded` and round-trip precision for both operands; table unchanged.
+- **Framework:** `--framework <tfm>` forwards one pair; reject blank/list/separator/assignment values,
+  leave availability validation to the runner. Zero/multiple/empty report gates stay per project; multiple reports
+  now suggest selecting one framework, rather than claiming all multi-targeted projects unsupported.
+- **Dry-run:** after parsing/source selection and owner/test resolution, print ordinal selected files,
+  owner, filter default/custom/none, threshold, requested framework or
+  `project default; no framework override`, cwd, then **every** project/results directory and exact escaped
+  JSON command tokens in execution order. No build, restore, test execution, directory creation/deletion,
+  coverage/TRX report reading, or threshold calculation.
+  `--changed` may run existing git discovery. Valid plan → 0, parse/resolution failure → 1; no-files
+  exit-0 shortcut remains.
+- **Parsing (approved departure from ignoring unknown flags):** exact help pre-scan wins; options may
+  occur among files, with changed mode, or alone (AllSrc unless changed). Preserve changed/file conflict.
+  Reject unknown flags, all duplicates **except** `--test-project`, missing/blank values, swallowed following
+  switches, and conflicts. No `--` passthrough.
+- **VSTest/Coverlet boundary:** no MTP translation or package-based heuristic. A read-only pre-deletion
+  check rejects the nearest applicable `global.json` MTP runner (including ancestor SDK config outside
+  the invocation root), known `DOTNET_TEST_RUNNER` override when an explicit SDK pin establishes
+  support (11 preview 6+), and straightforward unconditional
+  `TestingPlatformDotnetTestSupport=true` in the project/nearest conventional props/targets bounded to
+  the invocation root. Props → project → targets literal overrides are honored. This is not SDK
+  resolution or MSBuild evaluation: rolled-forward/unpinned SDK environment selection, custom imports,
+  conditional/computed properties, and build files above the root remain documented limitations.
+- **No new zero-tests policy:** runner exit, native error diagnostics and existing coverage gates decide; do not add a
+  separate zero-tests failure. README's previous claim was inaccurate.
+
+The Java reference checkout was unavailable during this implementation; the approved contract and
+existing C# tests, not newly verified Java evidence, govern the changes above.
 
 ## Locked choices
 
@@ -48,6 +146,22 @@ node set below (an approved departure), so absolute CRAP scores are not numerica
 > **R1**.)
 
 ## Ratified conventions (Mr. Das)
+
+- **.NET tool packaging.** The single CLI project packs as `Microsoft.Crap4CSharp`, with command
+  `crap4csharp` and initial version `1.0.0`. Keep SDK defaults: AnyCPU, portable, framework-dependent,
+  with no runtime identifiers or self-contained settings. The SDK derives numeric assembly/file
+  versions (`1.0.0.0`) from `Version`; prerelease `Version` overrides remain supported. Windows/Linux
+  x64/ARM64 consumers need the matching .NET 8 runtime and SDK for analysis. CI installs one shared
+  package artifact and checks the shim outside the checkout on all four native platforms.
+
+- **Release publishing.** Only a same-repository PR from `releases/vX.X.X` merged into `master`
+  publishes a GitHub tag/release `vX.X.X` with the tested `.nupkg` attached (no NuGet publishing).
+  Components are canonical decimal integers in `0..65534`; prerelease release branches are excluded.
+  If needed, preparation changes only the CLI project's literal `Version` and normally commits/pushes
+  that change to `master` before read-only reusable CI builds the exact SHA. Preparation executes no
+  repository code/MSBuild with write credentials. Publishing waits for build/tests and all four smoke
+  platforms. An advanced base, blocked push, or existing tag fails closed; partial releases are not
+  automatically repaired on retries.
 
 - **C1 — Single production assembly.** All production code lives in one assembly, `src/Crap4CSharp`
   (mirrors `crap4java`'s single module). The pure core must not depend on the ecosystem adapters

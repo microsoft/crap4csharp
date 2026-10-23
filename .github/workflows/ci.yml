@@ -5,12 +5,25 @@ on:
     branches: [master, "vibe/**"]
   pull_request:
     branches: [master]
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact source ref to build and test
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
 
 jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
 
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
@@ -35,3 +48,135 @@ jobs:
           name: coverage-cobertura
           path: coverage/**/coverage.cobertura.xml
           if-no-files-found: ignore
+
+  package:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      package-version: ${{ steps.versions.outputs.package-version }}
+      assembly-version: ${{ steps.versions.outputs.assembly-version }}
+      file-version: ${{ steps.versions.outputs.file-version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          global-json-file: global.json
+
+      - name: Pack tool (Release, warnings-as-errors)
+        run: dotnet pack src/Crap4CSharp/Crap4CSharp.csproj --configuration Release --output artifacts/packages
+
+      - name: Read effective versions
+        id: versions
+        shell: bash
+        run: |
+          versions=$(dotnet msbuild src/Crap4CSharp/Crap4CSharp.csproj -target:GetAssemblyVersion -property:Configuration=Release -getProperty:PackageVersion,AssemblyVersion,FileVersion)
+          for property in PackageVersion AssemblyVersion FileVersion; do
+            value=$(jq -er --arg property "$property" '.Properties[$property] | select(length > 0)' <<< "$versions")
+            case "$property" in
+              PackageVersion) key=package-version ;;
+              AssemblyVersion) key=assembly-version ;;
+              FileVersion) key=file-version ;;
+            esac
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Check package and assembly versions
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ steps.versions.outputs.package-version }}
+          ASSEMBLY_VERSION: ${{ steps.versions.outputs.assembly-version }}
+          FILE_VERSION: ${{ steps.versions.outputs.file-version }}
+        run: |
+          unzip -p "artifacts/packages/Microsoft.Crap4CSharp.$PACKAGE_VERSION.nupkg" '*.nuspec' | grep -F "<version>$PACKAGE_VERSION</version>"
+          grep -F "AssemblyVersionAttribute(\"$ASSEMBLY_VERSION\")" src/Crap4CSharp/obj/Release/net8.0/*.AssemblyInfo.cs
+          grep -F "AssemblyFileVersionAttribute(\"$FILE_VERSION\")" src/Crap4CSharp/obj/Release/net8.0/*.AssemblyInfo.cs
+
+      - name: Upload tool package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dotnet-tool-package
+          path: artifacts/packages/Microsoft.Crap4CSharp.${{ steps.versions.outputs.package-version }}.nupkg
+          if-no-files-found: error
+
+  tool-smoke:
+    permissions:
+      contents: read
+    needs: package
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            os: linux
+            architecture: x64
+          - runner: windows-latest
+            os: windows
+            architecture: x64
+          - runner: ubuntu-24.04-arm
+            os: linux
+            architecture: arm64
+          - runner: windows-11-arm
+            os: windows
+            architecture: arm64
+    env:
+      DOTNET_CLI_UI_LANGUAGE: en
+      EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+      PACKAGE_VERSION: ${{ needs.package.outputs.package-version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          global-json-file: global.json
+
+      - name: Download shared tool package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dotnet-tool-package
+          path: ${{ runner.temp }}/tool-packages
+
+      - name: Install and smoke tool (Linux)
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          dotnet --info | grep -E "^[[:space:]]*Architecture:[[:space:]]+$EXPECTED_ARCHITECTURE[[:space:]]*$"
+          dotnet tool install Microsoft.Crap4CSharp --version "$PACKAGE_VERSION" --tool-path "$RUNNER_TEMP/tools" --add-source "$RUNNER_TEMP/tool-packages" --no-cache
+          installed_version=${PACKAGE_VERSION,,}
+          cmp "$RUNNER_TEMP/tool-packages/Microsoft.Crap4CSharp.$PACKAGE_VERSION.nupkg" "$RUNNER_TEMP/tools/.store/microsoft.crap4csharp/$installed_version/microsoft.crap4csharp/$installed_version/microsoft.crap4csharp.$installed_version.nupkg"
+          cd "$RUNNER_TEMP"
+          output=$("$RUNNER_TEMP/tools/crap4csharp" --help)
+          printf '%s\n' "$output"
+          grep -F 'Usage:' <<< "$output"
+
+      - name: Install and smoke tool (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $info = dotnet --info
+          if ($LASTEXITCODE -ne 0) { throw "dotnet --info failed" }
+          $info | Write-Output
+          if (-not ($info -match "^\s*Architecture:\s+$env:EXPECTED_ARCHITECTURE\s*$")) {
+            throw "Expected native $env:EXPECTED_ARCHITECTURE dotnet host"
+          }
+          dotnet tool install Microsoft.Crap4CSharp --version $env:PACKAGE_VERSION --tool-path "$env:RUNNER_TEMP/tools" --add-source "$env:RUNNER_TEMP/tool-packages" --no-cache
+          if ($LASTEXITCODE -ne 0) { throw "Tool installation failed" }
+          $installedVersion = $env:PACKAGE_VERSION.ToLowerInvariant()
+          $packageHash = (Get-FileHash "$env:RUNNER_TEMP/tool-packages/Microsoft.Crap4CSharp.$env:PACKAGE_VERSION.nupkg").Hash
+          $installedHash = (Get-FileHash "$env:RUNNER_TEMP/tools/.store/microsoft.crap4csharp/$installedVersion/microsoft.crap4csharp/$installedVersion/microsoft.crap4csharp.$installedVersion.nupkg").Hash
+          if ($packageHash -ne $installedHash) { throw "Installed package differs from shared artifact" }
+          Set-Location $env:RUNNER_TEMP
+          $output = & "$env:RUNNER_TEMP/tools/crap4csharp.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw "Tool help failed" }
+          $output | Write-Output
+          if (-not ($output -match 'Usage:')) { throw "Missing Usage output" }

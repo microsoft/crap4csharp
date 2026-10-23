@@ -35,7 +35,14 @@ public static class CrapAnalyzer
 
         IReadOnlyDictionary<string, CoverageData> coverageMap =
             CoberturaCoverageParser.Parse(coberturaXmlPath);
+        return AnalyzeCoverage(changedFiles, coverageMap);
+    }
 
+    public static IReadOnlyList<MethodMetrics> AnalyzeCoverage(
+        IReadOnlyList<string> changedFiles, IReadOnlyDictionary<string, CoverageData> coverageMap)
+    {
+        ArgumentNullException.ThrowIfNull(changedFiles);
+        ArgumentNullException.ThrowIfNull(coverageMap);
         List<MethodMetrics> metrics = [];
         foreach (string file in changedFiles)
         {

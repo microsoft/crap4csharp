@@ -1,5 +1,7 @@
 namespace Microsoft.Crap4CSharp.Tests;
 
+using System.Text.Json;
+
 // Ports crap4java's CliApplicationTest + MainTest into the T14 composition layer, reshaped for Model B
 // (departures #9/#10) on top of the earlier #1 (fail-fast) and #7 (resolve-once). CliApplication is exercised
 // directly (no Program/T15), injecting a fake ICommandExecutor via CoverageRunner -- exactly the Java
@@ -218,7 +220,7 @@ public class CliApplicationTests
             fake.Directories.Should().ContainSingle();
             fake.Directories[0].Should().Be(root);
             fake.Commands[0].Should().Equal(
-                "dotnet", "test", expectedTestProject!, "--collect:XPlat Code Coverage", "--filter", "type!=IntegrationTests", "--results-directory", "coverage");
+                "dotnet", "test", expectedTestProject!, "--collect:XPlat Code Coverage", "--filter", "type!=IntegrationTests", "--results-directory", "coverage", "--logger", "trx;LogFilePrefix=crap4csharp-native");
         });
     }
 
@@ -810,6 +812,197 @@ public class CliApplicationTests
         });
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SingleSuitePreservesSameLineBodyHitAndUncalledLocalMiss(bool explicitSelection)
+    {
+        const int bodyStartLine = 3;
+        const string source = """
+            class C
+            {
+                int M(int x) { int L() => 0; if (x > 0) return 1; if (x > 1) return 2; if (x > 2) return 3; if (x > 3) return 4; return 0; }
+            }
+            """;
+        string xml = $"""
+            <coverage><class name="C" filename="C.cs"><methods>
+              <method name="M" signature="(System.Int32)"><lines><line number="{bodyStartLine}" hits="1"/></lines></method>
+              <method name="&lt;M&gt;g__L|0_0" signature="()"><lines><line number="{bodyStartLine}" hits="0"/></lines></method>
+            </methods></class></coverage>
+            """;
+
+        WithTempRoot(root =>
+        {
+            string src = ScaffoldModule(root, "Foo", "C.cs", source);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            FakeExecutor fake = new(0, xml);
+            CliApplication app = new(root, output, error, new CoverageRunner(fake));
+            string[] args = explicitSelection
+                ? [src, "--test-project", "tests/Foo.Tests/Foo.Tests.csproj"]
+                : [src];
+
+            app.Execute(args).Should().Be(2);
+
+            fake.Commands.Should().ContainSingle();
+            string row = output.ToString().Split('\n').Single(line => line.StartsWith("M ", StringComparison.Ordinal));
+            row.Split(' ', StringSplitOptions.RemoveEmptyEntries).Should().Equal("M", "C", "5", "50.0%", "8.1");
+            error.ToString().Trim().Should().Be("CRAP threshold exceeded: 8.125 > 8");
+        });
+    }
+
+    [Theory]
+    [InlineData("2.0625", 0)]
+    [InlineData("2.0624999999999996", 2)]
+    [InlineData("0", 2)]
+    public void UsesStrictUnroundedConfiguredThreshold(string threshold, int expectedExit)
+    {
+        WithTempRoot(root =>
+        {
+            string src = ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, Alpha75Xml)));
+            app.Execute([src, "--crap-threshold", threshold]).Should().Be(expectedExit);
+            if (expectedExit == 2)
+            {
+                error.ToString().Should().Contain($"CRAP threshold exceeded: 2.0625 > {threshold}");
+            }
+        });
+    }
+
+    [Fact]
+    public void AllNaAtZeroThresholdStillPasses()
+    {
+        WithTempRoot(root =>
+        {
+            string src = ScaffoldModule(root, "Foo", "Other.cs", "class Other { int Read() => 1; }");
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, Alpha75Xml)));
+            app.Execute([src, "--crap-threshold", "0"]).Should().Be(0);
+            output.ToString().Should().Contain("N/A");
+            error.ToString().Should().BeEmpty();
+        });
+    }
+
+    [Theory]
+    [InlineData("default")]
+    [InlineData("custom")]
+    [InlineData("none")]
+    public void DryRunPreviewsActualCommandWithoutCallsDeletionOrReadingOldCoverage(string filterMode)
+    {
+        WithTempRoot(root =>
+        {
+            string src = ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
+            string test = Path.Combine(root, "tests", "Foo.Tests", "Foo.Tests.csproj");
+
+            // Malformed stale XML would fail if dry-run tried to parse it.
+            string sentinel = WriteFile(root, "coverage/old/coverage.cobertura.xml", "not xml");
+            List<string> options = ["--test-project", Path.GetRelativePath(root, test),
+                "--dry-run", "--crap-threshold", "0", "--framework", "net8.0"];
+            if (filterMode == "custom")
+            {
+                options.AddRange(["--test-filter", "type=IntegrationTests | FullyQualifiedName~A B"]);
+            }
+            else if (filterMode == "none")
+            {
+                options.Add("--all-tests");
+            }
+
+            using StringWriter output = new();
+            using StringWriter error = new();
+            FakeExecutor fake = new(0, Alpha75Xml);
+            CliApplication app = new(root, output, error, new CoverageRunner(fake));
+            app.Execute([src, .. options]).Should().Be(0);
+            fake.Commands.Should().BeEmpty();
+            File.ReadAllText(sentinel).Should().Be("not xml");
+            string preview = output.ToString();
+            preview.Should().Contain("Selected files: " + JsonSerializer.Serialize(new[] { src }));
+            preview.Should().Contain("Owning project: " + Path.Combine(root, "src", "Foo", "Foo.csproj"));
+            preview.Should().Contain("Test project: " + test);
+            preview.Should().Contain("CRAP threshold: 0");
+            preview.Should().Contain("Framework: net8.0");
+            preview.Should().Contain("Invocation cwd: " + root);
+            preview.Should().Contain("Filter: " + (filterMode == "none" ? "none" : filterMode + ":"));
+            string commandJson = preview.Split('\n').Single(line => line.StartsWith("Command: ", StringComparison.Ordinal))[9..];
+            string[] command = JsonSerializer.Deserialize<string[]>(commandJson)!;
+            output.GetStringBuilder().Clear();
+            options.Remove("--dry-run");
+            app.Execute([src, .. options]).Should().Be(2);
+            fake.Commands.Should().ContainSingle().Which.Should().Equal(command);
+            error.ToString().Should().Contain("CRAP threshold exceeded");
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AmbiguousDiscoveryFailsBeforeRunnerAndExplicitSelectionResolvesIt(bool dryRun)
+    {
+        WithTempRoot(root =>
+        {
+            string src = ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
+            string other = WriteFile(
+                root,
+                "tests/Foo.UnitTests/Foo.UnitTests.csproj",
+                MinimalProject("../../src/Foo/Foo.csproj"));
+            using StringWriter output = new();
+            using StringWriter error = new();
+            FakeExecutor fake = new(0, Alpha75Xml);
+            CliApplication app = new(root, output, error, new CoverageRunner(fake));
+            string[] args = dryRun ? [src, "--dry-run"] : [src];
+            app.Execute(args).Should().Be(1);
+            error.ToString().Should().Contain("Multiple test projects").And.Contain("--test-project");
+            fake.Commands.Should().BeEmpty();
+            app.Execute([.. args, "--test-project", other]).Should().Be(0);
+            fake.Commands.Should().HaveCount(dryRun ? 0 : 1);
+        });
+    }
+
+    [Fact]
+    public void InvalidExplicitSelectionDoesNotFallbackAndDryRunNoFilesStillShortCircuits()
+    {
+        WithTempRoot(root =>
+        {
+            using StringWriter output = new();
+            using StringWriter error = new();
+            FakeExecutor fake = new(0, Alpha75Xml);
+            CliApplication app = new(root, output, error, new CoverageRunner(fake));
+            string[] args = ["--dry-run", "--test-project", "missing.csproj"];
+            app.Execute(args).Should().Be(0);
+            output.ToString().Should().Contain("No C# files");
+            ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
+            app.Execute(args).Should().Be(1);
+            error.ToString().Should().Contain("Invalid --test-project");
+            fake.Commands.Should().BeEmpty();
+        });
+    }
+
+    [Fact]
+    public void DefaultDryRunIsDeterministicAndKnownMtpIsRejectedWithoutDeletingCoverage()
+    {
+        WithTempRoot(root =>
+        {
+            ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            FakeExecutor fake = new(0, Alpha75Xml);
+            CliApplication app = new(root, output, error, new CoverageRunner(fake));
+            app.Execute(["--dry-run"]).Should().Be(0);
+            string first = output.ToString();
+            first.Should().Contain("project default; no framework override");
+            output.GetStringBuilder().Clear();
+            app.Execute(["--dry-run"]).Should().Be(0);
+            output.ToString().Should().Be(first);
+            string sentinel = WriteFile(root, "coverage/sentinel", "keep");
+            WriteFile(root, "global.json", """{"test":{"runner":"Microsoft.Testing.Platform"}}""");
+            app.Execute(["--dry-run"]).Should().Be(1);
+            File.ReadAllText(sentinel).Should().Be("keep");
+            fake.Commands.Should().BeEmpty();
+        });
+    }
+
     private static void WithTempRoot(Action<string> test)
     {
         string root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -888,6 +1081,11 @@ public class CliApplicationTests
         {
             Commands.Add(command);
             Directories.Add(workingDirectory);
+            string diagnosticDirectory = Path.Combine(workingDirectory, "coverage");
+            Directory.CreateDirectory(diagnosticDirectory);
+            File.WriteAllText(
+                Path.Combine(diagnosticDirectory, "crap4csharp-native_net8.0.trx"),
+                """<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><ResultSummary /></TestRun>""");
             if (_reportXml is not null)
             {
                 for (int i = 0; i < _reportCount; i++)

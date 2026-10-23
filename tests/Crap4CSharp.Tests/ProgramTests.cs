@@ -1,6 +1,7 @@
 namespace Microsoft.Crap4CSharp.Tests;
 
 using System.Diagnostics;
+using System.Text.Json;
 
 // The genuinely-new T15 integration tests: spawn the REAL built crap4csharp entry point end-to-end and
 // assert its process exit code. Ports crap4java MainTest's two mainProcess* tests -- the only MainTest
@@ -49,7 +50,46 @@ public class ProgramTests
         result.StandardError.Should().Contain("git status failed");
     }
 
-    private static async Task<SpawnResult> RunEntryPointAsync(params string[] args)
+    [Theory]
+    [InlineData("10.0.100", "Microsoft.Testing.Platform", "VSTest", false)]
+    [InlineData("11.0.100-preview.5.123", "Microsoft.Testing.Platform", "VSTest", false)]
+    [InlineData("11.0.100-preview.6.123", "microsoft.testing.platform", "VSTest", true)]
+    [InlineData("11.0.100", "Microsoft.Testing.Platform", "VSTest", true)]
+    [InlineData("11.0.100", "vstest", "Microsoft.Testing.Platform", false)]
+    [InlineData("11.0.100", "unknown", "Microsoft.Testing.Platform", true)]
+    public async Task DryRunChecksKnownRunnerEnvironmentOnlyWhenSdkPinSupportsIt(
+        string sdkVersion, string environmentRunner, string configuredRunner, bool incompatible)
+    {
+        SpawnResult result = await RunEntryPointAsync(
+            ["--dry-run", "--test-project", "Custom.csproj"],
+            (root, startInfo) =>
+            {
+                string src = Path.Combine(root, "src");
+                Directory.CreateDirectory(src);
+                File.WriteAllText(Path.Combine(src, "Subject.csproj"), "<Project />");
+                File.WriteAllText(Path.Combine(src, "Subject.cs"), "class Subject { int Get() => 1; }");
+                File.WriteAllText(
+                    Path.Combine(root, "Custom.csproj"),
+                    """<Project><ItemGroup><ProjectReference Include="src/Subject.csproj" /></ItemGroup></Project>""");
+                string config = JsonSerializer.Serialize(new { sdk = new { version = sdkVersion }, test = new { runner = configuredRunner } });
+                File.WriteAllText(Path.Combine(root, "global.json"), config);
+                startInfo.Environment["DOTNET_TEST_RUNNER"] = environmentRunner;
+            });
+        result.ExitCode.Should().Be(incompatible ? 1 : 0, result.StandardError);
+        if (incompatible)
+        {
+            result.StandardError.Should().Contain("requires VSTest");
+        }
+        else
+        {
+            result.StandardOutput.Should().Contain("Command: ");
+        }
+    }
+
+    private static Task<SpawnResult> RunEntryPointAsync(params string[] args) => RunEntryPointAsync(args, null);
+
+    private static async Task<SpawnResult> RunEntryPointAsync(
+        string[] args, Action<string, ProcessStartInfo>? setup)
     {
         // The app is a ProjectReference of the test project, so its DLL is copied next to the test assembly;
         // AppContext.BaseDirectory is that output dir at run time. Assembly name is Microsoft.Crap4CSharp
@@ -80,6 +120,7 @@ public class ProgramTests
             // -> ChangedFileDetector throws -> Program.Main's catch-all -> exit 1. Harmless for the non-git
             // spawn paths (--help / parse-error), which never invoke git.
             startInfo.Environment["GIT_CEILING_DIRECTORIES"] = Directory.GetParent(workingDirectory)!.FullName;
+            setup?.Invoke(workingDirectory, startInfo);
             startInfo.ArgumentList.Add(appDll);
             foreach (string arg in args)
             {

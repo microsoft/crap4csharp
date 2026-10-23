@@ -63,6 +63,33 @@ public class CoverageReportLocatorTests
     }
 
     [Fact]
+    public void ExcludesOnlyToolTrxDeploymentCopiesWithoutHidingIndependentReports()
+    {
+        WithTempRoot(root =>
+        {
+            string results = Path.Combine(root, "coverage");
+            string first = Path.Combine(results, "aaaa", "coverage.cobertura.xml");
+            string second = Path.Combine(results, "bbbb", "coverage.cobertura.xml");
+            string copy = Path.Combine(results, "_native-deployment", "In", "machine", "coverage.cobertura.xml");
+            foreach (string report in new[] { first, second, copy })
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(report)!);
+                File.WriteAllText(report, "<coverage/>");
+            }
+
+            const string diagnostics = """
+                <TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+                  <TestSettings><Deployment runDeploymentRoot="_native-deployment" /></TestSettings>
+                  <ResultSummary />
+                </TestRun>
+                """;
+            File.WriteAllText(Path.Combine(results, "crap4csharp-native_net8.0.trx"), diagnostics);
+
+            CoverageReportLocator.LocateAll(root).Should().Equal(first, second);
+        });
+    }
+
+    [Fact]
     public void ThrowsOnNullProjectRoot()
     {
         Action act = () => CoverageReportLocator.LocateAll(null!);

@@ -3,6 +3,7 @@ namespace Microsoft.Crap4CSharp;
 using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
+using DotNet.Globbing;
 
 // Model B (departure #9) test-project resolver: given an owning project (.csproj), find the test project that
 // exercises it, following the naming convention <Project>.Tests.csproj OR <Project>.UnitTests.csproj whose
@@ -12,7 +13,8 @@ using System.Xml.Linq;
 //
 // Search is bounded to the invocation root and deterministic: enumerate .csproj under the root (anti-glob
 // EndsWith(".csproj", Ordinal)), excluding bin/obj segments (parity with departure #5), filter to the two
-// candidate names, keep those transitively referencing the owning project, ordinal-first tie-break. No match
+// candidate names, keep those transitively referencing the owning project, reject ambiguity. Explicit
+// selection bypasses naming only, retaining the same graph check. No match
 // => null (CliApplication.Execute fail-fasts, departure #1, exit 1). StringComparer.Ordinal throughout
 // (departure #3) EXCEPT MSBuild property-NAME lookup, which is OrdinalIgnoreCase per MSBuild semantics
 // (NOT a #3 regression -- every path/value stays Ordinal); missing/unparseable referenced .csproj is
@@ -35,9 +37,64 @@ public static partial class TestProjectResolver
     // remaining $(...) tokens stay VERBATIM -> a non-existent path -> a dropped edge (fail-safe).
     private const int MaxExpansionDepth = 64;
 
+    public static IReadOnlyList<string> ResolveTestProjects(
+        string owningProject, string invocationRoot, IReadOnlyList<string> selectors)
+    {
+        ArgumentNullException.ThrowIfNull(selectors);
+        if (selectors.Count == 0)
+        {
+            string? automatic = ResolveTestProject(owningProject, invocationRoot);
+            return automatic is null ? [] : [automatic];
+        }
+
+        string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(invocationRoot));
+        HashSet<string> selected = new(StringComparer.Ordinal);
+        foreach (string selector in selectors)
+        {
+            string normalized = selector.Replace('\\', '/');
+            if (normalized.IndexOfAny(['[', ']', '{', '}', '!', ';']) >= 0
+                || normalized.Split('/').Any(segment => segment.Contains("**", StringComparison.Ordinal) && segment != "**"))
+            {
+                throw new ArgumentException($"Unsupported --test-project selector '{selector}'. Use literals or root-relative *, ?, and whole-segment ** globs.");
+            }
+
+            if (normalized.IndexOfAny(['*', '?']) < 0)
+            {
+                selected.Add(ResolveTestProject(owningProject, root, normalized)!);
+                continue;
+            }
+
+            if (Path.IsPathRooted(normalized) || normalized.Contains(':', StringComparison.Ordinal)
+                || normalized.Split('/').Contains("..", StringComparer.Ordinal))
+            {
+                throw new ArgumentException($"Glob --test-project '{selector}' must be relative to the invocation root.");
+            }
+
+            GlobOptions options = new();
+            options.Evaluation.CaseInsensitive = false;
+            Glob glob = Glob.Parse(normalized, options);
+            string[] matches = [.. EnumerateProjects(root)
+                .Where(path => glob.IsMatch(Path.GetRelativePath(root, path).Replace('\\', '/')))];
+            if (matches.Length == 0)
+            {
+                throw new ArgumentException($"No eligible projects match --test-project '{selector}'.");
+            }
+
+            foreach (string match in matches)
+            {
+                selected.Add(ResolveTestProject(owningProject, root, match)!);
+            }
+        }
+
+        return [.. selected.OrderBy(path => path, StringComparer.Ordinal)];
+    }
+
     // Resolves <Project>.Tests.csproj OR <Project>.UnitTests.csproj (under invocationRoot) whose
     // ProjectReferences TRANSITIVELY include owningProject. Returns the test-project .csproj path, or null.
-    public static string? ResolveTestProject(string owningProject, string invocationRoot)
+    public static string? ResolveTestProject(string owningProject, string invocationRoot) =>
+        ResolveTestProject(owningProject, invocationRoot, null);
+
+    public static string? ResolveTestProject(string owningProject, string invocationRoot, string? explicitProject)
     {
         ArgumentNullException.ThrowIfNull(owningProject);
         ArgumentNullException.ThrowIfNull(invocationRoot);
@@ -46,7 +103,7 @@ public static partial class TestProjectResolver
         string dotTests = project + ".Tests";
         string dotUnitTests = project + ".UnitTests";
         string owner = Path.GetFullPath(owningProject);
-        string root = Path.GetFullPath(invocationRoot);
+        string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(invocationRoot));
 
         if (!Directory.Exists(root))
         {
@@ -55,10 +112,20 @@ public static partial class TestProjectResolver
 
         ResolutionContext context = new(root);
 
-        return Directory
-            .EnumerateFiles(root, "*", SearchOption.AllDirectories)
-            .Where(file => file.EndsWith(".csproj", StringComparison.Ordinal))
-            .Where(file => !HasBuildOutputSegment(file))
+        if (explicitProject is not null)
+        {
+            string selected = Path.GetFullPath(Path.Combine(root, explicitProject.Replace('\\', '/')));
+            if (!IsBoundedPath(selected, root) || HasBuildOutputSegment(Path.GetRelativePath(root, selected))
+                || !selected.EndsWith(".csproj", StringComparison.Ordinal) || !File.Exists(selected)
+                || !ReferencesTransitively(selected, owner, context))
+            {
+                throw new ArgumentException($"Invalid --test-project '{explicitProject}': select an existing .csproj inside '{root}', outside bin/obj, with a project-reference chain to '{owner}'.");
+            }
+
+            return selected;
+        }
+
+        string[] candidates = [.. EnumerateProjects(root)
             .Where(file =>
             {
                 string name = Path.GetFileNameWithoutExtension(file);
@@ -66,8 +133,70 @@ public static partial class TestProjectResolver
                     || string.Equals(name, dotUnitTests, StringComparison.Ordinal);
             })
             .Where(candidate => ReferencesTransitively(candidate, owner, context))
-            .OrderBy(file => file, StringComparer.Ordinal)
-            .FirstOrDefault();
+            .OrderBy(file => file, StringComparer.Ordinal)];
+        if (candidates.Length > 1)
+        {
+            throw new ArgumentException($"Multiple test projects reference '{owner}': {string.Join(", ", candidates)}. Select one with --test-project <path>.");
+        }
+
+        return candidates.FirstOrDefault();
+    }
+
+    // Do not descend through links (including cycles) or build output. Explicit paths and graph edges
+    // additionally check each component, so a lexical in-root path cannot hide an out-of-root target.
+    private static IEnumerable<string> EnumerateProjects(string root)
+    {
+        if (!Directory.Exists(root))
+        {
+            yield break;
+        }
+
+        foreach (string entry in Directory.EnumerateFileSystemEntries(root))
+        {
+            if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0 || HasBuildOutputSegment(Path.GetFileName(entry)))
+            {
+                continue;
+            }
+
+            if (Directory.Exists(entry))
+            {
+                foreach (string project in EnumerateProjects(entry))
+                {
+                    yield return project;
+                }
+            }
+            else if (entry.EndsWith(".csproj", StringComparison.Ordinal))
+            {
+                yield return entry;
+            }
+        }
+    }
+
+    private static bool IsBoundedPath(string path, string root)
+    {
+        if (!IsAtOrUnder(path, root))
+        {
+            return false;
+        }
+
+        string current = root;
+        foreach (string segment in Path.GetRelativePath(root, path).Split(Path.DirectorySeparatorChar))
+        {
+            current = Path.Combine(current, segment);
+            if ((File.Exists(current) || Directory.Exists(current))
+                && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+            {
+                FileSystemInfo info = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
+                string? target = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+                if (target is null || !IsAtOrUnder(target, root)
+                    || HasBuildOutputSegment(Path.GetRelativePath(root, target)))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     // Cycle-safe transitive ProjectReference reachability from fromProject to targetProject. Both paths are
@@ -83,13 +212,20 @@ public static partial class TestProjectResolver
         while (frontier.Count > 0)
         {
             string current = frontier.Pop();
-            if (!visited.Add(current))
+            if (!IsBoundedPath(current, context.Root)
+                || HasBuildOutputSegment(Path.GetRelativePath(context.Root, current)) || !visited.Add(current))
             {
                 continue;
             }
 
             foreach (string reference in DirectProjectReferences(current, context))
             {
+                if (!IsBoundedPath(reference, context.Root)
+                    || HasBuildOutputSegment(Path.GetRelativePath(context.Root, reference)))
+                {
+                    continue;
+                }
+
                 if (string.Equals(reference, target, StringComparison.Ordinal))
                 {
                     return true;
@@ -215,7 +351,7 @@ public static partial class TestProjectResolver
         while (current is not null && IsAtOrUnder(current, root))
         {
             string candidate = Path.Combine(current, "Directory.Build.props");
-            if (File.Exists(candidate))
+            if (File.Exists(candidate) && IsBoundedPath(candidate, root))
             {
                 chain.Add(candidate);
             }
@@ -240,8 +376,9 @@ public static partial class TestProjectResolver
 
     private static bool IsAtOrUnder(string path, string root)
     {
+        string prefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
         return string.Equals(path, root, StringComparison.Ordinal)
-            || path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+            || path.StartsWith(prefix, StringComparison.Ordinal);
     }
 
     // Reads a Directory.Build.props file's direct-child <PropertyGroup>s. NEW I/O -> the SAME non-throwing

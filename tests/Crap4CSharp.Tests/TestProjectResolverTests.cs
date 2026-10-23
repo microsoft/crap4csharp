@@ -3,13 +3,117 @@ namespace Microsoft.Crap4CSharp.Tests;
 using System.Linq;
 
 // Covers TestProjectResolver (Model B, departure #9): the <Project>.Tests / <Project>.UnitTests naming gate,
-// transitive ProjectReference reachability (cycle-safe), the bin/obj + bounded-scope exclusions, ordinal-first
-// tie-break, backslash/`..` Include normalization, the non-throwing missing-reference discipline, and (D-T29a)
+// transitive ProjectReference reachability (cycle-safe), bin/obj + bounded-scope exclusions, deterministic
+// ambiguity rejection, explicit selection, backslash/`..` Include normalization, and (D-T29a)
 // the two-stage MSBuild-property evaluation that expands `$(...)` tokens in ProjectReference Includes before
 // matching. Each test scaffolds minimal on-disk SDK-style .csproj (and Directory.Build.props) fixtures in a
 // fresh temp tree, removed in a finally. PascalCase, no [Trait].
 public class TestProjectResolverTests
 {
+    [Theory]
+    [InlineData("tests/*.csproj", 1)]
+    [InlineData("tests/?.csproj", 1)]
+    [InlineData("tests/**/*.csproj", 3)]
+    [InlineData(@"tests\**\?.csproj", 2)]
+    [InlineData("tests/*/*.csproj", 1)]
+    [InlineData("tests/**/B.csproj", 1)]
+    [InlineData("tests/**/space suite/*.csproj", 1)]
+    public void ExpandsSupportedGlobsWithZeroOrDeepDirectories(string selector, int expected)
+    {
+        WithTempRoot(root =>
+        {
+            string owner = WriteProject(SubDir(root, "src"), "Foo");
+            string a = WriteProject(SubDir(root, "tests"), "A", owner);
+            WriteProject(SubDir(root, "tests", "space suite"), "B", owner);
+            WriteProject(SubDir(root, "tests", "deep", "suite"), "Long", owner);
+            WriteProject(SubDir(root, "tests", "obj"), "Ignored", owner);
+            WriteProject(SubDir(root, "tests", "bin", "deep"), "Ignored", owner);
+            var selected = TestProjectResolver.ResolveTestProjects(owner, root, [selector]);
+            selected.Should().HaveCount(expected).And.BeInAscendingOrder(StringComparer.Ordinal);
+            TestProjectResolver.ResolveTestProjects(owner, root, [selector, a, a])
+                .Should().HaveCount(selected.Contains(a, StringComparer.Ordinal) ? expected : expected + 1);
+        });
+    }
+
+    [Theory]
+    [InlineData("tests/No*.csproj")]
+    [InlineData("Tests/*.csproj")]
+    [InlineData("tests/*.CSPROJ")]
+    [InlineData("tests/[AB].csproj")]
+    [InlineData("tests/{A,B}.csproj")]
+    [InlineData("!tests/*.csproj")]
+    [InlineData("tests/A**.csproj")]
+    [InlineData("../**/*.csproj")]
+    [InlineData("tests/../../*.csproj")]
+    [InlineData("tests/obj/*.csproj")]
+    [InlineData("tests/bin/Bad.csproj")]
+    public void InvalidSelectorCannotBeMaskedByValidSelector(string selector)
+    {
+        WithTempRoot(root =>
+        {
+            string owner = WriteProject(SubDir(root, "src"), "Foo");
+            string valid = WriteProject(SubDir(root, "tests"), "A", owner);
+            WriteProject(SubDir(root, "tests", "obj"), "Bad", owner);
+            WriteProject(SubDir(root, "tests", "bin"), "Bad", owner);
+            FluentActions.Invoking(() => TestProjectResolver.ResolveTestProjects(owner, root, [valid, selector]))
+                .Should().Throw<ArgumentException>();
+            FluentActions.Invoking(() => TestProjectResolver.ResolveTestProjects(owner, root, [valid, root + "/**/*.csproj"]))
+                .Should().Throw<ArgumentException>();
+        });
+    }
+
+    [Fact]
+    public void EveryGlobMatchMustReferenceOwnerRegardlessOfName()
+    {
+        WithTempRoot(root =>
+        {
+            string owner = WriteProject(SubDir(root, "src"), "Foo");
+            string valid = WriteProject(SubDir(root, "tests"), "Anything", owner);
+            WriteProject(SubDir(root, "tests"), "Unrelated");
+            TestProjectResolver.ResolveTestProjects(owner, root, [valid]).Should().Equal(valid);
+            FluentActions.Invoking(() => TestProjectResolver.ResolveTestProjects(owner, root, ["tests/*.csproj"]))
+                .Should().Throw<ArgumentException>().WithMessage("*Unrelated*");
+        });
+    }
+
+    [Fact]
+    public void ExplicitMultiSelectionKeepsBoundedPropertyAndCycleGraph()
+    {
+        WithTempRoot(root =>
+        {
+            string owner = WriteProject(SubDir(root, "src"), "Foo");
+            string bridge = WriteProject(SubDir(root, "bridge"), "Bridge", owner, "../tests/A.csproj");
+            string a = WriteProject(SubDir(root, "tests"), "A", bridge);
+            string b = WriteProject(SubDir(root, "tests"), "B", "$(RepoRoot)src/Foo.csproj");
+            File.WriteAllText(
+                Path.Combine(root, "Directory.Build.props"),
+                "<Project><PropertyGroup><RepoRoot>$(MSBuildThisFileDirectory)</RepoRoot></PropertyGroup></Project>");
+            TestProjectResolver.ResolveTestProjects(owner, root, ["tests/*.csproj"]).Should().Equal(a, b);
+        });
+    }
+
+    [Fact]
+    public void DoesNotTraverseOutOfRootGraphOrSymlinkEscapes()
+    {
+        WithTempRoot(outer =>
+        {
+            string root = SubDir(outer, "root");
+            string owner = WriteProject(SubDir(root, "src"), "Foo");
+            string outside = WriteProject(SubDir(outer, "outside"), "Bridge", owner);
+            string test = WriteProject(SubDir(root, "tests"), "A", outside);
+            Directory.CreateSymbolicLink(Path.Combine(root, "escape"), Path.GetDirectoryName(outside)!);
+            File.CreateSymbolicLink(Path.Combine(root, "tests", "Link.csproj"), outside);
+            FluentActions.Invoking(() => TestProjectResolver.ResolveTestProjects(owner, root, [test]))
+                .Should().Throw<ArgumentException>();
+            FluentActions.Invoking(() => TestProjectResolver.ResolveTestProjects(owner, root, ["escape/*.csproj"]))
+                .Should().Throw<ArgumentException>();
+            FluentActions.Invoking(() => TestProjectResolver.ResolveTestProjects(owner, root, ["tests/Link.csproj"]))
+                .Should().Throw<ArgumentException>();
+            FluentActions.Invoking(() => TestProjectResolver.ResolveTestProjects(owner, root, [outside]))
+                .Should().Throw<ArgumentException>();
+        });
+    }
+
     [Fact]
     public void ResolvesDotTestsProjectByDirectReference()
     {
@@ -141,7 +245,7 @@ public class TestProjectResolverTests
     }
 
     [Fact]
-    public void PicksOrdinalFirstWhenMultipleQualify()
+    public void RejectsAmbiguityListingCandidatesInOrdinalOrder()
     {
         WithTempRoot(root =>
         {
@@ -151,12 +255,77 @@ public class TestProjectResolverTests
             string unitTests = WriteProject(
                 SubDir(root, "tests", "Foo.UnitTests"), "Foo.UnitTests", @"..\..\src\Foo\Foo.csproj");
 
-            string? result = TestProjectResolver.ResolveTestProject(owning, root);
+            FluentActions.Invoking(() => TestProjectResolver.ResolveTestProject(owning, root))
+                .Should().Throw<ArgumentException>()
+                .WithMessage($"*{tests}, {unitTests}*--test-project*");
+        });
+    }
 
-            string expected = new[] { tests, unitTests }
-                .OrderBy(p => p, StringComparer.Ordinal)
-                .First();
-            result.Should().Be(expected);
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ExplicitCustomNameBypassesNamingOnly(bool transitive)
+    {
+        WithTempRoot(root =>
+        {
+            string owning = WriteProject(SubDir(root, "src", "Foo"), "Foo");
+            WriteProject(SubDir(root, "src", "Bridge"), "Bridge", "../Foo/Foo.csproj");
+            string test = WriteProject(
+                SubDir(root, "tests", "Custom"),
+                "Custom",
+                transitive ? "../../src/Bridge/Bridge.csproj" : "../../src/Foo/Foo.csproj");
+            TestProjectResolver.ResolveTestProject(owning, root, Path.GetRelativePath(root, test))
+                .Should().Be(test);
+            TestProjectResolver.ResolveTestProject(owning, root).Should().BeNull();
+        });
+    }
+
+    [Theory]
+    [InlineData("tests/Missing.csproj")]
+    [InlineData("tests/Unrelated.csproj")]
+    [InlineData("../Outside.csproj")]
+    [InlineData("bin/Custom.csproj")]
+    [InlineData("obj/Custom.csproj")]
+    [InlineData("tests/Custom.txt")]
+    public void RejectsInvalidExplicitSelectionEvenWhenDiscoveryWouldSucceed(string selected)
+    {
+        WithTempRoot(root =>
+        {
+            string owning = WriteProject(SubDir(root, "src", "Foo"), "Foo");
+            WriteProject(SubDir(root, "tests"), "Foo.Tests", "../src/Foo/Foo.csproj");
+            WriteProject(SubDir(root, "tests"), "Unrelated");
+            WriteProject(SubDir(root, "bin"), "Custom", "../src/Foo/Foo.csproj");
+            WriteProject(SubDir(root, "obj"), "Custom", "../src/Foo/Foo.csproj");
+            FluentActions.Invoking(() => TestProjectResolver.ResolveTestProject(owning, root, selected))
+                .Should().Throw<ArgumentException>().WithMessage("*Invalid --test-project*");
+        });
+    }
+
+    [Fact]
+    public void RejectsExistingOutsideProjectDespiteGenuineReference()
+    {
+        WithTempRoot(parent =>
+        {
+            string root = SubDir(parent, "repo");
+            string owning = WriteProject(SubDir(root, "src", "Foo"), "Foo");
+            string outside = WriteProject(SubDir(parent, "outside"), "Custom", "../repo/src/Foo/Foo.csproj");
+            FluentActions.Invoking(() => TestProjectResolver.ResolveTestProject(owning, root, outside))
+                .Should().Throw<ArgumentException>().WithMessage("*Invalid --test-project*");
+        });
+    }
+
+    [Fact]
+    public void ExplicitSelectionUsesSameBoundedPropertyExpansionAndNormalizesPaths()
+    {
+        WithTempRoot(root =>
+        {
+            string owning = WriteProject(SubDir(root, "src", "Foo"), "Foo");
+            File.WriteAllText(
+                Path.Combine(root, "Directory.Build.props"),
+                "<Project><PropertyGroup><RepoRoot>$(MSBuildThisFileDirectory)</RepoRoot></PropertyGroup></Project>");
+            string test = WriteProject(SubDir(root, "tests"), "Custom", "$(RepoRoot)src/Foo/Foo.csproj");
+            TestProjectResolver.ResolveTestProject(owning, root + Path.DirectorySeparatorChar, "tests/../tests/Custom.csproj")
+                .Should().Be(test);
         });
     }
 

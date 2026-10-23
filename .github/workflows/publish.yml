@@ -1,0 +1,139 @@
+name: publish
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [master]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'releases/v') && format('publish-{0}', github.repository) || format('publish-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'releases/v')
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.prepare.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Validate release branch version
+        id: version
+        env:
+          RELEASE_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          python3 -I - <<'PY'
+          import os
+          import re
+
+          match = re.fullmatch(r"releases/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", os.environ["RELEASE_BRANCH"])
+          if match is None or any(int(component) > 65534 for component in match.groups()):
+              raise SystemExit("Expected releases/vX.X.X with canonical assembly-safe components (0..65534)")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={'.'.join(match.groups())}\n")
+          PY
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: master
+          persist-credentials: false
+
+      # This write-permission job must never execute repository code or MSBuild.
+      - name: Prepare exact release source
+        id: prepare
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$MERGE_SHA"
+          authorization=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          test "$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $authorization" ls-remote origin refs/heads/master | cut -f1)" = "$MERGE_SHA"
+          python3 -I - <<'PY'
+          import os
+          import re
+          import stat
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          path = Path("src/Crap4CSharp/Crap4CSharp.csproj")
+          if any(part.is_symlink() for part in (path, *path.parents)) or not stat.S_ISREG(path.stat().st_mode):
+              raise SystemExit("Expected a regular project file")
+          text = path.read_bytes().decode("utf-8")
+          root = ET.fromstring(text)
+          versions = root.findall(".//Version")
+          groups = root.findall("./PropertyGroup/Version")
+          matches = list(re.finditer(r"<Version>([^<]+)</Version>", text))
+          if len(versions) != 1 or versions != groups or len(matches) != 1:
+              raise SystemExit("Expected exactly one literal project Version")
+          version = versions[0]
+          parent = next(group for group in root.findall("./PropertyGroup") if version in list(group))
+          if version.attrib or parent.attrib or version.text != matches[0].group(1):
+              raise SystemExit("Expected an unconditional literal Version")
+          if version.text != os.environ["RELEASE_VERSION"]:
+              match = matches[0]
+              updated = text[:match.start(1)] + os.environ["RELEASE_VERSION"] + text[match.end(1):]
+              if ET.fromstring(updated).find("./PropertyGroup/Version").text != os.environ["RELEASE_VERSION"]:
+                  raise SystemExit("Literal replacement did not update project Version")
+              path.write_bytes(updated.encode("utf-8"))
+          PY
+          if ! git diff --quiet -- src/Crap4CSharp/Crap4CSharp.csproj; then
+            git -c core.hooksPath=/dev/null -c commit.gpgsign=false \
+              -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit --only -m "Set release version $RELEASE_VERSION" -- src/Crap4CSharp/Crap4CSharp.csproj
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $authorization" \
+              push origin HEAD:refs/heads/master
+          fi
+          sha=$(git rev-parse HEAD)
+          test "$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $authorization" ls-remote origin refs/heads/master | cut -f1)" = "$sha"
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+  ci:
+    needs: prepare
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+
+  publish:
+    needs: [prepare, ci]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download tested tool package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dotnet-tool-package
+          path: packages
+
+      - name: Tag and publish tested source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          test "$(gh api "repos/$GH_REPO/git/ref/heads/master" --jq .object.sha)" = "$RELEASE_SHA"
+          package="packages/Microsoft.Crap4CSharp.$RELEASE_VERSION.nupkg"
+          test -f "$package"
+          unzip -p "$package" '*.nuspec' | grep -F "<version>$RELEASE_VERSION</version>"
+          tag="v$RELEASE_VERSION"
+          # Creating the ref fails closed if the tag already exists, including partial retries.
+          gh api --method POST "repos/$GH_REPO/git/refs" -f "ref=refs/tags/$tag" -f "sha=$RELEASE_SHA"
+          gh release create "$tag" "$package" --verify-tag --target "$RELEASE_SHA" \
+            --title "$tag" --notes "Microsoft.Crap4CSharp $RELEASE_VERSION"

@@ -32,11 +32,12 @@ public class CoverageRunnerTests
             runner.GenerateCoverage(TestProject, root);
 
             // (a) the stale results dir is gone.
-            Directory.Exists(Path.Combine(root, "coverage")).Should().BeFalse();
+            File.Exists(staleReport).Should().BeFalse();
+            File.Exists(Path.Combine(root, "coverage", "old.txt")).Should().BeFalse();
 
             // (b) the exact locked token list was run (Model B target token + unit-only --filter pair).
             executor.Commands[0].Should().Equal(
-                "dotnet", "test", TestProject, "--collect:XPlat Code Coverage", "--filter", "type!=IntegrationTests", "--results-directory", "coverage");
+                "dotnet", "test", TestProject, "--collect:XPlat Code Coverage", "--filter", "type!=IntegrationTests", "--results-directory", "coverage", "--logger", "trx;LogFilePrefix=crap4csharp-native");
 
             // (c) the working directory is the verbatim coverage base -- NOT Path.GetFullPath (no normalization).
             executor.Directories[0].Should().Be(root);
@@ -70,7 +71,7 @@ public class CoverageRunnerTests
             runner.GenerateCoverage(TestProject, root);
 
             executor.Commands[0].Should().Equal(
-                "dotnet", "test", TestProject, "--collect:XPlat Code Coverage", "--filter", "type!=IntegrationTests", "--results-directory", "coverage");
+                "dotnet", "test", TestProject, "--collect:XPlat Code Coverage", "--filter", "type!=IntegrationTests", "--results-directory", "coverage", "--logger", "trx;LogFilePrefix=crap4csharp-native");
             executor.Directories[0].Should().Be(root);
         });
     }
@@ -88,6 +89,167 @@ public class CoverageRunnerTests
             runner.GenerateCoverage(TestProject, root);
 
             executor.Commands[0].Should().ContainInOrder("--filter", "type!=IntegrationTests");
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BuildsAndExecutesSameExactTokensForCustomFilterOrAllTests(bool allTests)
+    {
+        WithTempRoot(root =>
+        {
+            const string filter = "FullyQualifiedName~A B|type=IntegrationTests";
+            CliArguments options = new(CliMode.AllSrc, [])
+            {
+                TestFilter = allTests ? null : filter,
+                AllTests = allTests,
+                Framework = "net8.0",
+            };
+            RecordingExecutor executor = new(0);
+            new CoverageRunner(executor).GenerateCoverage(TestProject, root, options);
+            var command = CoverageRunner.BuildCommand(TestProject, options);
+            executor.Commands.Should().ContainSingle().Which.Should().Equal(command);
+            command.Should().ContainInOrder("--framework", "net8.0");
+            if (allTests)
+            {
+                command.Should().NotContain("--filter");
+            }
+            else
+            {
+                command.Should().ContainInOrder("--filter", filter);
+                command.Should().NotContain("type!=IntegrationTests");
+            }
+        });
+    }
+
+    [Fact]
+    public void NativeFilterFailureIsNotRetriedUnfiltered()
+    {
+        WithTempRoot(root =>
+        {
+            RecordingExecutor executor = new(1);
+            CliArguments options = new(CliMode.AllSrc, []) { TestFilter = "(" };
+            FluentActions.Invoking(() => new CoverageRunner(executor).GenerateCoverage(TestProject, root, options))
+                .Should().Throw<CoverageException>().WithMessage("*exit 1");
+            executor.Commands.Should().ContainSingle().Which.Should().ContainInOrder("--filter", "(");
+        });
+    }
+
+    [Theory]
+    [InlineData("Warning", "Exception filtering tests: Incorrect format for TestCaseFilter")]
+    [InlineData("Error", "Native adapter failed")]
+    public void NativeRunInfoFailureOverridesSuccessfulProcessExit(string outcome, string message)
+    {
+        WithTempRoot(root =>
+        {
+            string diagnostics = $"""
+                <TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+                  <ResultSummary><RunInfos><RunInfo outcome="{outcome}"><Text>{message}</Text></RunInfo></RunInfos></ResultSummary>
+                </TestRun>
+                """;
+            RecordingExecutor executor = new(0, diagnostics);
+            FluentActions.Invoking(() => new CoverageRunner(executor).GenerateCoverage(TestProject, root))
+                .Should().Throw<CoverageException>().WithMessage("*" + message);
+            executor.Commands.Should().ContainSingle();
+        });
+    }
+
+    [Fact]
+    public void ZeroTestsAndUnrelatedWarningsDoNotFailDiagnostics()
+    {
+        WithTempRoot(root =>
+        {
+            const string diagnostics = """
+                <TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+                  <ResultSummary outcome="Completed">
+                    <Counters total="0" executed="0" />
+                    <RunInfos><RunInfo outcome="Warning"><Text>No test matches the given testcase filter.</Text></RunInfo></RunInfos>
+                  </ResultSummary>
+                </TestRun>
+                """;
+            FluentActions.Invoking(() => new CoverageRunner(new RecordingExecutor(0, diagnostics))
+                .GenerateCoverage(TestProject, root)).Should().NotThrow();
+        });
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("<TestRun")]
+    [InlineData("<TestRun />")]
+    public void MissingOrInvalidNativeDiagnosticsFailExplicitly(string? diagnostics)
+    {
+        WithTempRoot(root =>
+        {
+            FluentActions.Invoking(() => new CoverageRunner(new RecordingExecutor(0, diagnostics))
+                .GenerateCoverage(TestProject, root)).Should().Throw<CoverageException>();
+        });
+    }
+
+    [Theory]
+    [InlineData("global.json", """{"test":{"runner":"Microsoft.Testing.Platform"}}""")]
+    [InlineData("tests/Custom.csproj", "<Project><PropertyGroup><TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport></PropertyGroup></Project>")]
+    [InlineData("Directory.Build.props", "<Project><PropertyGroup><TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport></PropertyGroup></Project>")]
+    [InlineData("tests/Directory.Build.targets", "<Project><PropertyGroup><TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport></PropertyGroup></Project>")]
+    public void KnownMtpRoutingFailsBeforeDeletingCoverage(string config, string contents)
+    {
+        WithTempRoot(root =>
+        {
+            string sentinel = Path.Combine(root, "coverage", "sentinel");
+            Directory.CreateDirectory(Path.GetDirectoryName(sentinel)!);
+            File.WriteAllText(sentinel, "keep");
+            string path = Path.Combine(root, config);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, contents);
+            RecordingExecutor executor = new(0);
+            FluentActions.Invoking(() =>
+                new CoverageRunner(executor).GenerateCoverage("tests/Custom.csproj", root))
+                .Should().Throw<CoverageException>().WithMessage("*VSTest*");
+            File.ReadAllText(sentinel).Should().Be("keep");
+            executor.Commands.Should().BeEmpty();
+        });
+    }
+
+    [Fact]
+    public void MtpPackageAloneDoesNotImplyRoutingAndLiteralFalseOverridesProps()
+    {
+        WithTempRoot(root =>
+        {
+            File.WriteAllText(
+                Path.Combine(root, "Directory.Build.props"),
+                "<Project><PropertyGroup><TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport></PropertyGroup></Project>");
+            string project = Path.Combine(root, "Custom.csproj");
+            const string projectContents = """
+                <Project>
+                  <PropertyGroup><TestingPlatformDotnetTestSupport>false</TestingPlatformDotnetTestSupport></PropertyGroup>
+                  <ItemGroup><PackageReference Include="Microsoft.Testing.Platform" Version="1.9.0" /></ItemGroup>
+                </Project>
+                """;
+            File.WriteAllText(project, projectContents);
+            RecordingExecutor executor = new(0);
+            new CoverageRunner(executor).GenerateCoverage(project, root);
+            executor.Commands.Should().ContainSingle();
+        });
+    }
+
+    [Fact]
+    public void ReadsNearestAncestorGlobalJsonOutsideInvocationRootWithoutModifyingIt()
+    {
+        WithTempRoot(parent =>
+        {
+            string global = Path.Combine(parent, "global.json");
+            const string contents = """{"test":{"runner":"Microsoft.Testing.Platform"}}""";
+            File.WriteAllText(global, contents);
+            string root = Path.Combine(parent, "repo");
+            Directory.CreateDirectory(root);
+            FluentActions.Invoking(() => CoverageRunner.ValidateVSTest("Custom.csproj", root))
+                .Should().Throw<CoverageException>();
+            File.ReadAllText(global).Should().Be(contents);
+
+            // A nearer config governs even if it doesn't contain a test section.
+            File.WriteAllText(Path.Combine(root, "global.json"), "{}");
+            FluentActions.Invoking(() => CoverageRunner.ValidateVSTest("Custom.csproj", root))
+                .Should().NotThrow();
         });
     }
 
@@ -144,9 +306,12 @@ public class CoverageRunnerTests
     {
         private readonly int _exitCode;
 
-        public RecordingExecutor(int exitCode)
+        private readonly string? _diagnostics;
+
+        public RecordingExecutor(int exitCode, string? diagnostics = """<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><ResultSummary /></TestRun>""")
         {
             _exitCode = exitCode;
+            _diagnostics = diagnostics;
         }
 
         public List<IReadOnlyList<string>> Commands { get; } = [];
@@ -157,6 +322,13 @@ public class CoverageRunnerTests
         {
             Commands.Add(command);
             Directories.Add(workingDirectory);
+            if (_diagnostics is not null)
+            {
+                string directory = Path.Combine(workingDirectory, "coverage");
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(Path.Combine(directory, "crap4csharp-native_net8.0.trx"), _diagnostics);
+            }
+
             return _exitCode;
         }
     }

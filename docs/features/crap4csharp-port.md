@@ -166,6 +166,8 @@ Critical path: T1 → T2 → T9/T10 → T11 → T14 → T15 → T16. T3/T4/T5 an
   namespace).
 - **C4 (deferred trivia).** If ever packed as a `dotnet tool`, set `ToolCommandName=crap4csharp` so the
   CLI invocation name matches the contract.
+- **C4 discharged (.NET tool packaging).** `PackAsTool=true` and `ToolCommandName=crap4csharp`
+  are set in the CLI project; the installed shim retains the CLI contract.
 
 ### Carry-forward watch-items (from Anders's T5 review — for the T14/T15 CLI seam)
 

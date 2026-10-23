@@ -45,147 +45,178 @@ public static partial class CoberturaCoverageParser
             return new Dictionary<string, CoverageData>(StringComparer.Ordinal);
         }
 
-        try
-        {
-            // D-T10a: XmlResolver = null blocks every external fetch (DTD/entity/XInclude) -- the actual
-            // XXE surface; DtdProcessing.Ignore tolerates (but never resolves) a DOCTYPE.
-            XmlReaderSettings settings = new()
-            {
-                DtdProcessing = DtdProcessing.Ignore,
-                XmlResolver = null,
-            };
-            using XmlReader reader = XmlReader.Create(coberturaXmlPath, settings);
-            XDocument document = XDocument.Load(reader);
-
-            // StringComparer.Ordinal mirrors Java HashMap's ordinal key semantics and keeps keys aligned
-            // with T11's ordinal prefix lookup (departure #3 determinism).
-            Dictionary<string, CoverageData> coverage = new(StringComparer.Ordinal);
-
-            // T23: compiler-generated MEMBERS (lambdas, local functions, async-locals) are attributed to
-            // their enclosing SOURCE method and UNIONed with that method's coverage. Collected in phase 1
-            // (document order) then folded in a phase-2 nearest-body merge (sec.3) after the loop -- the
-            // inner merge scan is read-only, so the map is never enumerated while mutated.
-            List<SyntheticContribution> contributions = [];
-            foreach (XElement classElement in document.Descendants("class"))
-            {
-                string rawClassName = classElement.Attribute("name")?.Value ?? string.Empty;
-
-                // T24 (departure #12): basename segment of the coverage key. Read once per <class> from
-                // its filename attribute; Path.GetFileName strips any absolute/relative dir prefix
-                // (coverlet may emit either, '/'- or '\'-separated). A missing/empty attribute yields ""
-                // -> an unmatchable key (D-T24d), never a mis-attribution.
-                string basename = Path.GetFileName(classElement.Attribute("filename")?.Value ?? string.Empty);
-
-                // T23 class-level routing (generalizes T21's state-machine interception to EVERY
-                // compiler-generated member). Precedence A -> B -> C (contract sec.1):
-                //   A  state-machine class (Enclosing/<inner>d__N), matched by TryParseStateMachine:
-                //      A1  inner is ITSELF a synthetic member name (<M>g__.../<M>b__...)  -> ASYNC-LOCAL
-                //          (async local function or async lambda): COLLECT its MoveNext coverage as a
-                //          phase-2 SyntheticContribution attributed to the outer source method M.
-                //      A2  else  -> PLAIN async/iterator (T21): DIRECT-EMIT via the UNCHANGED
-                //          ReadStateMachineMoveNext (byte-for-byte T21 behaviour).
-                //   B  lambda display class (<>c static cache / <>c__DisplayClassN capturing closure):
-                //      COLLECT each <M>b__/<M>g__ member as a SyntheticContribution.
-                //   C  real class: ReadClassMethods (which itself COLLECTS real-class-hosted local
-                //      functions / lambdas, sec.1.C, before its unchanged skip predicate).
-                // Precedence is unambiguous: a plain d__ has inner="M" (A2); an async-local d__ has
-                // inner="<M>g__L|N" (A1); a <>c never carries a >d__N tail so it can only reach B.
-                if (TryParseStateMachine(rawClassName, out string enclosingRaw, out string inner))
-                {
-                    Match memberMatch = SyntheticMemberNameRegex().Match(inner);
-                    if (memberMatch.Success)
-                    {
-                        CollectAsyncLocalContribution(
-                            classElement, NormalizeTypeName(enclosingRaw), memberMatch.Groups[1].Value, basename, contributions);
-                    }
-                    else
-                    {
-                        ReadStateMachineMoveNext(classElement, NormalizeTypeName(enclosingRaw), inner, basename, coverage);
-                    }
-                }
-                else if (TryGetDisplayClassEnclosing(rawClassName, out string displayEnclosingRaw))
-                {
-                    CollectDisplayClassContributions(
-                        classElement, NormalizeTypeName(displayEnclosingRaw), basename, contributions);
-                }
-                else
-                {
-                    ReadClassMethods(classElement, rawClassName, NormalizeTypeName(rawClassName), basename, coverage, contributions);
-                }
-            }
-
-            // Phase 2 (sec.3): union each collected synthetic member into its enclosing source method.
-            MergeSyntheticContributions(contributions, coverage);
-
-            return coverage;
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException("Unable to parse Cobertura XML: " + coberturaXmlPath, ex);
-        }
+        return ParseCore([coberturaXmlPath], union: false);
     }
 
-    // The frozen-reciprocal normalizer (docs/decisions.md "Frozen reciprocal contract"). Coverlet already
-    // emits the namespace dotted, the backtick arity per level, and a bare chain in the global namespace;
-    // the only work is turning the nested-type separators ('/' or '+') into '.', which is the mechanical
-    // inverse of CSharpMethodParser.TypeNameOf. Public so the reciprocity-table tests can call it directly
-    // (the `internal` modifier is banned -- C1).
+    // Each suite must independently contain usable coverage. Direct anchors from the entire batch
+    // precede synthetic folding; folding already-aggregated counters loses both line identity and anchors.
+    public static IReadOnlyDictionary<string, CoverageData> ParseReports(IReadOnlyList<string> paths)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        return ParseCore(paths, union: true);
+    }
+
+    // Frozen reciprocal type normalization shared with Roslyn's TypeNameOf.
     public static string NormalizeTypeName(string rawClassName)
     {
         ArgumentNullException.ThrowIfNull(rawClassName);
         return rawClassName.Replace('/', '.').Replace('+', '.');
     }
 
-    // The compiler-generated skip predicate (W-T9b/W-T10c). Returns true (skip) when EITHER the method's
-    // own name OR its containing class is synthetic. Takes the raw (un-normalized) class name so the
-    // angle-bracket state-machine / display-class markers are still visible. Public for the same
-    // least-privilege-testable reason as NormalizeTypeName.
     public static bool IsCompilerGeneratedMethod(string rawClassName, string methodName)
     {
         ArgumentNullException.ThrowIfNull(rawClassName);
         ArgumentNullException.ThrowIfNull(methodName);
+        return rawClassName.IndexOfAny(AngleBrackets) >= 0
+            || methodName.IndexOfAny(AngleBrackets) >= 0
+            || methodName is ".ctor" or ".cctor";
+    }
 
-        // Rule 1: a synthetic containing class. Post-T21/T23 the async/iterator state machines
-        // (Enclosing/<Method>d__N) AND the lambda display classes (Outer+<>c / Outer+<>c__DisplayClassN)
-        // are all diverted upstream in Parse (state machines to A, display classes to B) and never reach
-        // this predicate, so rule 1 is effectively dead on the real-class path -- as with T21, every
-        // angle-bracket CLASS is routed away before ReadClassMethods calls in.
-        if (rawClassName.IndexOfAny(AngleBrackets) >= 0)
+    private static Dictionary<string, CoverageData> ParseCore(IReadOnlyList<string> paths, bool union)
+    {
+        Dictionary<string, List<LineObservation>> coverage = new(StringComparer.Ordinal);
+        Dictionary<string, string> memberKeys = new(StringComparer.Ordinal);
+        List<SyntheticContribution> contributions = [];
+        foreach (string path in paths)
         {
-            return true;
+            try
+            {
+                // D-T10a: tolerate a DOCTYPE without resolving external entities.
+                XmlReaderSettings settings = new() { DtdProcessing = DtdProcessing.Ignore, XmlResolver = null };
+                using XmlReader reader = XmlReader.Create(path, settings);
+                XDocument document = XDocument.Load(reader);
+                int contributionsBefore = contributions.Count;
+                bool usable = false;
+                foreach (XElement classElement in document.Descendants("class"))
+                {
+                    string rawClassName = classElement.Attribute("name")?.Value ?? string.Empty;
+                    string basename = Path.GetFileName(classElement.Attribute("filename")?.Value ?? string.Empty);
+
+                    // T21/T23 routing: plain state machines are body anchors; async-locals, display
+                    // classes, and real-class synthetics contribute to their nearest source body.
+                    if (TryParseStateMachine(rawClassName, out string enclosingRaw, out string inner))
+                    {
+                        Match memberMatch = SyntheticMemberNameRegex().Match(inner);
+                        if (memberMatch.Success)
+                        {
+                            CollectAsyncLocalContribution(
+                                classElement, NormalizeTypeName(enclosingRaw), memberMatch.Groups[1].Value, basename, contributions);
+                        }
+                        else
+                        {
+                            usable |= ReadStateMachineMoveNext(classElement, NormalizeTypeName(enclosingRaw), inner, basename, coverage, memberKeys, union);
+                        }
+                    }
+                    else if (TryGetDisplayClassEnclosing(rawClassName, out string displayEnclosingRaw))
+                    {
+                        CollectDisplayClassContributions(
+                            classElement, NormalizeTypeName(displayEnclosingRaw), basename, contributions);
+                    }
+                    else
+                    {
+                        usable |= ReadClassMethods(classElement, rawClassName, NormalizeTypeName(rawClassName), basename, coverage, contributions, memberKeys, union);
+                    }
+                }
+
+                // Independently gate each report. A good suite must never mask an empty second suite.
+                if (union && !usable && contributions.Count == contributionsBefore)
+                {
+                    return new(StringComparer.Ordinal);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("Unable to parse Cobertura XML: " + path, ex);
+            }
         }
 
-        // Rule 2: an angle-bracket display method hosted on a real class (lambdas <M>b__x_y, local
-        // functions <M>g__L|x_y). Post-T23 ReadClassMethods attributes the RECOGNIZED b__/g__ members to
-        // their source method BEFORE calling this predicate, so rule 2 now only catches the residual
-        // unrecognized angle-bracket names (e.g. a synthetic that is neither b__ nor g__).
-        if (methodName.IndexOfAny(AngleBrackets) >= 0)
+        // Multi-report ordering is canonical, so nearest-body distance ties do not depend on suite order.
+        // A single Parse retains its historical document-order tie rule.
+        if (union && paths.Count > 1)
         {
-            return true;
+            coverage = coverage.OrderBy(entry => ParseTrailingLine(entry.Key))
+                .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+                .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal);
+            contributions = [.. contributions.OrderBy(contribution => contribution.MinLine)
+                .ThenBy(contribution => contribution.EnclosingType, StringComparer.Ordinal)
+                .ThenBy(contribution => contribution.SourceMethod, StringComparer.Ordinal)
+                .ThenBy(contribution => contribution.Basename, StringComparer.Ordinal)];
         }
 
-        // Rule 3: instance/static constructors -- T9 excludes constructors.
-        return methodName is ".ctor" or ".cctor";
+        MergeSyntheticContributions(contributions, coverage);
+        return coverage.ToDictionary(entry => entry.Key, entry => ToCoverageData(entry.Value, union), StringComparer.Ordinal);
+    }
+
+    private readonly record struct LineObservation(int Number, int Hits);
+
+    private static List<LineObservation> ReadLines(XElement method) =>
+        [.. (method.Element("lines")?.Elements("line") ?? [])
+            .Select(line => new LineObservation(
+                ParseIntOrZero(line.Attribute("number")?.Value), ParseIntOrZero(line.Attribute("hits")?.Value)))];
+
+    private static CoverageData ToCoverageData(List<LineObservation> lines, bool union)
+    {
+        if (!union)
+        {
+            return new(lines.Count(line => line.Hits == 0), lines.Count(line => line.Hits > 0));
+        }
+
+        var observations = lines.GroupBy(line => line.Number).ToList();
+        int covered = observations.Count(group => group.Any(line => line.Hits > 0));
+        return new(observations.Count - covered, covered);
+    }
+
+    private static void AddDirect(
+        string prefix,
+        string signature,
+        List<LineObservation> lines,
+        Dictionary<string, List<LineObservation>> coverage,
+        Dictionary<string, string> memberKeys,
+        bool union)
+    {
+        int min = lines.Min(line => line.Number);
+        string key = prefix + min.ToString(CultureInfo.InvariantCulture);
+
+        // Signature is private attribution metadata only. When absent, keep the frozen line key as
+        // identity rather than accidentally merging same-name overloads.
+        string identity = signature.Length == 0 ? key : prefix + "signature:" + signature;
+        if (union && memberKeys.TryGetValue(identity, out string? previousKey))
+        {
+            List<LineObservation> previous = coverage[previousKey];
+            previous.AddRange(lines);
+            string canonical = prefix + previous.Min(line => line.Number).ToString(CultureInfo.InvariantCulture);
+            coverage.Remove(previousKey);
+            coverage[canonical] = previous;
+            memberKeys[identity] = canonical;
+        }
+        else
+        {
+            coverage[key] = lines;
+            memberKeys[identity] = key;
+        }
     }
 
     // Ports readClassMethods: walk ONLY <class>/<methods>/<method>, and per method ONLY its <lines>/<line>
     // children. The sibling class-level <lines> aggregate (which duplicates the union of all method lines)
     // is deliberately never descended into, and <line> attributes/children beyond @number/@hits (branch,
     // condition-coverage, <conditions>) are ignored.
-    private static void ReadClassMethods(
+    private static bool ReadClassMethods(
         XElement classElement,
         string rawClassName,
         string typeName,
         string basename,
-        Dictionary<string, CoverageData> coverage,
-        List<SyntheticContribution> contributions)
+        Dictionary<string, List<LineObservation>> coverage,
+        List<SyntheticContribution> contributions,
+        Dictionary<string, string> memberKeys,
+        bool union)
     {
         XElement? methodsElement = classElement.Element("methods");
         if (methodsElement is null)
         {
-            return;
+            return false;
         }
 
+        bool usable = false;
         foreach (XElement method in methodsElement.Elements("method"))
         {
             string methodName = method.Attribute("name")?.Value ?? string.Empty;
@@ -207,7 +238,7 @@ public static partial class CoberturaCoverageParser
                 continue;
             }
 
-            List<XElement> lines = method.Element("lines")?.Elements("line").ToList() ?? [];
+            List<LineObservation> lines = ReadLines(method);
             if (lines.Count == 0)
             {
                 // Faithful analog of Java's null INSTRUCTION counter -> skip. A method that HAS lines but
@@ -215,15 +246,19 @@ public static partial class CoberturaCoverageParser
                 continue;
             }
 
-            int coveredLines = lines.Count(line => ParseIntOrZero(line.Attribute("hits")?.Value) > 0);
-            int missedLines = lines.Count(line => ParseIntOrZero(line.Attribute("hits")?.Value) == 0);
-            int minChildLine = lines.Min(line => ParseIntOrZero(line.Attribute("number")?.Value));
-
             // T24: TypeName#method#basename:line -- the basename segregates per-file overloads of a
             // partial class; ":line" (MIN @number) stays LAST for the reciprocal nearest-line lookup.
-            string key = typeName + "#" + methodName + "#" + basename + ":" + minChildLine.ToString(CultureInfo.InvariantCulture);
-            coverage[key] = new CoverageData(missedLines, coveredLines);
+            AddDirect(
+                typeName + "#" + methodName + "#" + basename + ":",
+                method.Attribute("signature")?.Value ?? string.Empty,
+                lines,
+                coverage,
+                memberKeys,
+                union);
+            usable = true;
         }
+
+        return usable;
     }
 
     // R3 (T21) state-machine matcher. Anchored on the class's LAST nested segment: `<Method>d__N`, where
@@ -280,12 +315,14 @@ public static partial class CoberturaCoverageParser
     // noise. If MoveNext is absent, or present but line-less, emit NOTHING (the faithful analog of
     // ReadClassMethods' "no lines -> skip"; the method stays N/A and T11's nearest-line lookup resolves
     // it from the source method's StartLine).
-    private static void ReadStateMachineMoveNext(
+    private static bool ReadStateMachineMoveNext(
         XElement classElement,
         string normalizedEnclosing,
         string sourceMethod,
         string basename,
-        Dictionary<string, CoverageData> coverage)
+        Dictionary<string, List<LineObservation>> coverage,
+        Dictionary<string, string> memberKeys,
+        bool union)
     {
         XElement? moveNext = classElement.Element("methods")?
             .Elements("method")
@@ -293,29 +330,31 @@ public static partial class CoberturaCoverageParser
                 string.Equals(method.Attribute("name")?.Value, "MoveNext", StringComparison.Ordinal));
         if (moveNext is null)
         {
-            return;
+            return false;
         }
 
-        List<XElement> lines = moveNext.Element("lines")?.Elements("line").ToList() ?? [];
+        List<LineObservation> lines = ReadLines(moveNext);
         if (lines.Count == 0)
         {
-            return;
+            return false;
         }
 
-        int coveredLines = lines.Count(line => ParseIntOrZero(line.Attribute("hits")?.Value) > 0);
-        int missedLines = lines.Count(line => ParseIntOrZero(line.Attribute("hits")?.Value) == 0);
-        int minChildLine = lines.Min(line => ParseIntOrZero(line.Attribute("number")?.Value));
-
         // T24: EnclosingType#sourceMethod#basename:line -- same shape as ReadClassMethods; ":line" LAST.
-        string key = normalizedEnclosing + "#" + sourceMethod + "#" + basename + ":" + minChildLine.ToString(CultureInfo.InvariantCulture);
-        coverage[key] = new CoverageData(missedLines, coveredLines);
+        AddDirect(
+            normalizedEnclosing + "#" + sourceMethod + "#" + basename + ":",
+            NormalizeTypeName(classElement.Attribute("name")?.Value ?? string.Empty),
+            lines,
+            coverage,
+            memberKeys,
+            union);
+        return true;
     }
 
-    // T23 (sec.3) phase-1 carrier: one compiler-generated member's coverage counts, tagged with the
+    // T23 phase-1 carrier: one compiler-generated member's line observations, tagged with the
     // enclosing type + demangled source method + source-file basename, plus its own MIN @number so
     // phase 2 can anchor it to the NEAREST body/overload entry.
     private readonly record struct SyntheticContribution(
-        string EnclosingType, string SourceMethod, string Basename, int Missed, int Covered, int MinLine);
+        string EnclosingType, string SourceMethod, string Basename, List<LineObservation> Lines, int MinLine);
 
     // T23 (B-case router). A lambda display class is a nested type whose LAST '/'|'+' segment starts with
     // "<>c" (`<>c` static-lambda cache or `<>c__DisplayClassN_M` capturing closure). Splits IDENTICALLY
@@ -387,8 +426,8 @@ public static partial class CoberturaCoverageParser
         }
     }
 
-    // T23 (sec.2/3) contribution builder. Counts a synthetic member's OWN <lines> IDENTICALLY to
-    // ReadClassMethods (covered = hits > 0, missed = hits == 0, MinLine = MIN @number) and appends ONE
+    // T23 contribution builder. Retains a synthetic member's OWN <lines> like ReadClassMethods
+    // (MinLine = MIN @number) and appends ONE
     // SyntheticContribution. A member with zero <line>s yields NO contribution (the faithful analog of
     // ReadClassMethods' "no lines -> skip").
     private static void CollectSyntheticMember(
@@ -398,38 +437,35 @@ public static partial class CoberturaCoverageParser
         string basename,
         List<SyntheticContribution> contributions)
     {
-        List<XElement> lines = method.Element("lines")?.Elements("line").ToList() ?? [];
+        List<LineObservation> lines = ReadLines(method);
         if (lines.Count == 0)
         {
             return;
         }
 
-        int coveredLines = lines.Count(line => ParseIntOrZero(line.Attribute("hits")?.Value) > 0);
-        int missedLines = lines.Count(line => ParseIntOrZero(line.Attribute("hits")?.Value) == 0);
-        int minChildLine = lines.Min(line => ParseIntOrZero(line.Attribute("number")?.Value));
+        int minChildLine = lines.Min(line => line.Number);
 
-        contributions.Add(new SyntheticContribution(enclosingType, sourceMethod, basename, missedLines, coveredLines, minChildLine));
+        contributions.Add(new SyntheticContribution(enclosingType, sourceMethod, basename, lines, minChildLine));
     }
 
-    // T23 (sec.3) phase-2 nearest-body MERGE. For each collected contribution (document order), fold it
-    // into the NEAREST existing `Type#SourceMethod#basename:*` entry -- else CREATE one. This is a
-    // faithful UNION, not a double-count: every physical source line belongs to exactly ONE coverlet
-    // <method>, so body lines and synthetic lines are DISJOINT and summing (missed,covered) equals the
-    // set union. Nearest-by-line (strict '<', first-in-enumeration wins ties) MIRRORS CrapAnalyzer.-
+    // T23 phase-2 nearest-body merge. Fold each contribution into the NEAREST existing
+    // `Type#SourceMethod#basename:*` entry, else CREATE one. Retain physical line identity through
+    // attribution; only the final projection computes counters (line union for ParseReports, legacy
+    // counting for Parse). Nearest-by-line (strict '<', first-in-enumeration wins ties) mirrors CrapAnalyzer.-
     // NearestCoverage / W-T11a, so a synthetic anchors to its OWN overload's body span -- distinct
     // same-file overloads are never blended (C6 preserved). A no-anchor method gets a CREATED entry at
     // the synthetic's MinLine; a second no-anchor synthetic of the same method then finds and unions into
     // it. The inner scan is read-only; the add/update happens after it -- no enumerate-while-mutate.
     private static void MergeSyntheticContributions(
         List<SyntheticContribution> contributions,
-        Dictionary<string, CoverageData> coverage)
+        Dictionary<string, List<LineObservation>> coverage)
     {
         foreach (SyntheticContribution c in contributions)
         {
             string prefix = c.EnclosingType + "#" + c.SourceMethod + "#" + c.Basename + ":";
             string? bestKey = null;
             int bestDistance = int.MaxValue;
-            foreach (KeyValuePair<string, CoverageData> entry in coverage)
+            foreach (KeyValuePair<string, List<LineObservation>> entry in coverage)
             {
                 if (!entry.Key.StartsWith(prefix, StringComparison.Ordinal))
                 {
@@ -446,12 +482,11 @@ public static partial class CoberturaCoverageParser
 
             if (bestKey is not null)
             {
-                CoverageData existing = coverage[bestKey];
-                coverage[bestKey] = new CoverageData(existing.MissedLines + c.Missed, existing.CoveredLines + c.Covered);
+                coverage[bestKey].AddRange(c.Lines);
             }
             else
             {
-                coverage[prefix + c.MinLine.ToString(CultureInfo.InvariantCulture)] = new CoverageData(c.Missed, c.Covered);
+                coverage[prefix + c.MinLine.ToString(CultureInfo.InvariantCulture)] = [.. c.Lines];
             }
         }
     }

@@ -1,75 +1,93 @@
 namespace Microsoft.Crap4CSharp;
 
-// Faithful port of crap4java's CliArgumentsParser. Java's non-instantiable `final class` with a
-// private ctor maps to the idiomatic C# `static class`. Precedence is preserved exactly: no args →
-// AllSrc; --help wins over everything; --changed → ChangedSrc (rejecting file args); otherwise the
-// non-flag args become an ExplicitFiles list. String comparisons are ordinal to match Java's
-// String.equals / String.startsWith.
+using System.Globalization;
+
 public static class CliArgumentsParser
 {
-    // Ports parse(String[]) exactly.
     public static CliArguments Parse(string[] args)
     {
-        // Java implicitly throws NullPointerException on `args.length` when args is null; the
-        // idiomatic C# equivalent (and CA1062's required guard, since suppressions are banned) is a
-        // fail-fast ArgumentNullException. Behavior is otherwise identical to crap4java's parse.
         ArgumentNullException.ThrowIfNull(args);
-
-        if (args.Length == 0)
+        if (args.Contains("--help", StringComparer.Ordinal))
         {
-            return new CliArguments(CliMode.AllSrc, []);
+            return new(CliMode.Help, []);
         }
 
-        if (ContainsFlag(args, "--help"))
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        List<string> files = [];
+        List<string> selectors = [];
+        CliArguments options = new(CliMode.AllSrc, files) { TestProjects = selectors };
+        bool changed = false;
+        for (int i = 0; i < args.Length; i++)
         {
-            return new CliArguments(CliMode.Help, []);
-        }
-
-        bool changed = ContainsFlag(args, "--changed");
-        IReadOnlyList<string> values = NonFlagArgs(args);
-        EnsureChangedIsNotCombined(changed, values);
-        if (changed)
-        {
-            return new CliArguments(CliMode.ChangedSrc, []);
-        }
-
-        return new CliArguments(CliMode.ExplicitFiles, [.. values]);
-    }
-
-    private static bool ContainsFlag(string[] args, string flag)
-    {
-        foreach (string arg in args)
-        {
-            if (string.Equals(arg, flag, StringComparison.Ordinal))
+            string arg = args[i];
+            if (!arg.StartsWith('-'))
             {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static List<string> NonFlagArgs(string[] args)
-    {
-        List<string> values = [];
-        foreach (string arg in args)
-        {
-            if (arg.StartsWith("--", StringComparison.Ordinal))
-            {
+                files.Add(arg);
                 continue;
             }
 
-            values.Add(arg);
+            if (!seen.Add(arg) && arg != "--test-project")
+            {
+                throw new ArgumentException($"Duplicate option: {arg}");
+            }
+
+            switch (arg)
+            {
+                case "--changed": changed = true; break;
+                case "--all-tests": options = options with { AllTests = true }; break;
+                case "--dry-run": options = options with { DryRun = true }; break;
+                case "--test-project":
+                    selectors.Add(Value(args, ref i));
+                    break;
+                case "--test-filter": options = options with { TestFilter = Value(args, ref i) }; break;
+                case "--framework":
+                    string framework = Value(args, ref i);
+                    if (!framework.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-')
+                        || !char.IsAsciiLetterOrDigit(framework[0]))
+                    {
+                        throw new ArgumentException("--framework requires one TFM, not a list or property assignment.");
+                    }
+
+                    options = options with { Framework = framework };
+                    break;
+                case "--crap-threshold":
+                    string value = Value(args, ref i);
+                    if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double threshold)
+                        || !double.IsFinite(threshold) || threshold < 0)
+                    {
+                        throw new ArgumentException("--crap-threshold requires a finite nonnegative invariant number.");
+                    }
+
+                    options = options with { CrapThreshold = threshold };
+                    break;
+                default: throw new ArgumentException($"Unknown option: {arg}");
+            }
         }
 
-        return values;
-    }
-
-    private static void EnsureChangedIsNotCombined(bool changed, IReadOnlyList<string> values)
-    {
-        if (changed && values.Count > 0)
+        if (changed && files.Count > 0)
         {
             throw new ArgumentException("--changed cannot be combined with file arguments");
         }
+
+        if (options.AllTests && options.TestFilter is not null)
+        {
+            throw new ArgumentException("--all-tests cannot be combined with --test-filter");
+        }
+
+        return options with { Mode = changed ? CliMode.ChangedSrc : files.Count > 0 ? CliMode.ExplicitFiles : CliMode.AllSrc };
+    }
+
+    private static string Value(string[] args, ref int index)
+    {
+        string option = args[index];
+        if (index + 1 >= args.Length || string.IsNullOrWhiteSpace(args[index + 1])
+            || (args[index + 1].StartsWith('-')
+                && !(option == "--crap-threshold" && double.TryParse(
+                    args[index + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out _))))
+        {
+            throw new ArgumentException($"{option} requires a nonblank value.");
+        }
+
+        return args[++index];
     }
 }
