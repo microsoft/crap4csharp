@@ -29,8 +29,7 @@ public static class Program
             return new CliApplication(
                 projectRoot,
                 Console.Out,
-                Console.Error,
-                new CoverageRunner(new ProcessCommandExecutor()))
+                Console.Error)
                 .Execute(args);
         }
         catch (Exception ex)

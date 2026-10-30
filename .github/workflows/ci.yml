@@ -35,3 +35,35 @@ jobs:
           name: coverage-cobertura
           path: coverage/**/coverage.cobertura.xml
           if-no-files-found: ignore
+
+  tool-package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          global-json-file: global.json
+
+      - name: Restore locked tool dependencies
+        run: dotnet restore src/Crap4CSharp/Crap4CSharp.csproj --locked-mode
+
+      - name: Pack preview tool
+        run: dotnet pack src/Crap4CSharp/Crap4CSharp.csproj --configuration Release --no-restore --output artifacts/cli
+
+      - name: Install and exercise packaged command
+        shell: pwsh
+        run: ./scripts/verify-tool-package.ps1 -PackageDirectory artifacts/cli -ToolDirectory "$env:RUNNER_TEMP/crap4csharp-tool"
+
+      - name: Upload review package
+        if: matrix.os == 'ubuntu-24.04'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: crap4csharp-tool-0.1.0-preview.1
+          path: artifacts/cli/*.nupkg
+          if-no-files-found: error

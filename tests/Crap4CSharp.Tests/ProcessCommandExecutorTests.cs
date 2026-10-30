@@ -1,5 +1,6 @@
 namespace Microsoft.Crap4CSharp.Tests;
 
+using System.Globalization;
 using System.Runtime.InteropServices;
 
 // Faithful counterpart to crap4java's ProcessCommandExecutorTest. The single Java test
@@ -9,6 +10,34 @@ using System.Runtime.InteropServices;
 // which cannot exist on Windows.
 public class ProcessCommandExecutorTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RoutesChildStreamsToTheConfiguredWriters(bool combineStreams)
+    {
+        using StringWriter output = new(CultureInfo.InvariantCulture);
+        using StringWriter error = new(CultureInfo.InvariantCulture);
+        IReadOnlyList<string> command = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? ["cmd.exe", "/c", "echo child-output & echo child-error 1>&2"]
+            : ["/bin/sh", "-c", "echo child-output; echo child-error >&2"];
+
+        int exit = new ProcessCommandExecutor(combineStreams ? error : output, error)
+            .Run(command, Path.GetTempPath());
+
+        exit.Should().Be(0);
+        error.ToString().Should().Contain("child-error");
+        if (combineStreams)
+        {
+            output.ToString().Should().BeEmpty();
+            error.ToString().Should().Contain("child-output");
+        }
+        else
+        {
+            output.ToString().Should().Contain("child-output").And.NotContain("child-error");
+            error.ToString().Should().NotContain("child-output");
+        }
+    }
+
     [Fact]
     public void ReturnsExitCodeFromLaunchedProcess()
     {

@@ -7,4 +7,11 @@ public record MethodMetrics(
     string ClassName,
     int Complexity,
     double? CoveragePercent,
-    double? CrapScore);
+    double? CrapScore)
+{
+    public string? File { get; init; }
+
+    public int? StartLine { get; init; }
+
+    public int? EndLine { get; init; }
+}

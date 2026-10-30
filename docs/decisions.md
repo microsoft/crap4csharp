@@ -12,6 +12,24 @@ Locked decisions for the C# port of `crap4java`. Source of truth alongside `docs
 - **Test fidelity:** every `crap4java` test gets a faithful C# counterpart with identical
   verification — except where an approved deliberate departure changes it.
 
+## Machine-readable output
+
+- `--format console|json|sarif` selects rendering; console remains the default and its formatter is
+  unchanged. Optional init-only source file/start/end fields on `MethodMetrics` preserve its positional
+  constructor and deconstruction, while carrying the existing parser locations to renderers.
+- JSON reports all members with explicit camelCase names, numeric `coveragePercent` on the existing
+  0–100 scale, numeric CRAP and `null` for unavailable data. No extra schema version is introduced for
+  this initial format. Paths are relative to the invocation directory where possible; ordering is
+  CRAP descending/null last with ordinal location/name ties, independent of locale and input order.
+- SARIF 2.1.0 uses `CRAP001` only for the existing strict `> 8.0` gate. `warning` identifies a detected
+  quality problem; no severity bands are added. Relative artifact URIs use `%SRCROOT%` (the invocation
+  directory, resolved by consumers), avoiding an embedded absolute checkout root. Missing physical
+  locations are omitted. Both new formatters use BCL `System.Text.Json`; no new dependencies.
+- Machine analysis reserves stdout for the document and sends subprocess progress and diagnostics to
+  stderr. Empty analysis emits an empty document/exit 0; threshold violations emit a document/exit 2;
+  fatal errors remain exit 1 without a report. Parse errors with `--format` send usage to stderr;
+  legacy parse errors retain stdout usage. `--help` still wins and prints usage to stdout.
+
 ## CRAP formula
 
 Preserved verbatim from `crap4java`. For a method with cyclomatic complexity `CC` and coverage
@@ -584,9 +602,9 @@ the invariants.
     `''=='$(X)'` is not matched.
   - **`$(SolutionDir)`: explicit-def ONLY** — no `.sln` walk/synthesis (honors departure #9's `.sln`
     retirement); an undefined `$(SolutionDir)` stays a documented fail-safe residual (→ verbatim → dropped).
-  - **Property NAMES compare `OrdinalIgnoreCase`** (MSBuild semantics) — the ONLY `OrdinalIgnoreCase` in the
-    resolver; all path VALUES, sets, sorts, and tie-breaks stay `StringComparer.Ordinal` (departure #3
-    intact; called out in a code comment so it is not misread as a #3 regression).
+  - **Property NAMES compare `OrdinalIgnoreCase`** (MSBuild semantics); test-project names also allow
+    the fallback recorded under departure #9. All path VALUES, sets, sorts, and tie-breaks stay
+    `StringComparer.Ordinal` (departure #3 intact).
   - **No-throw / fail-safe (non-negotiable):** every uncertain branch (undefined, unknown, non-self-guard
     condition, cyclic, self-referential, depth-capped, `$(SolutionDir)` without explicit def, property
     functions `$([…]::…)`, item/metadata `@(…)` / `%(…)`, env/global props) degrades to a VERBATIM `$(...)`
@@ -1203,7 +1221,12 @@ false-fail. No exit-table row (D-T14a) moves; the frozen `TypeName#method#basena
    `<Project>.UnitTests.csproj` whose `ProjectReference`s **transitively** include the owning project,
    found by the new `TestProjectResolver` (recursive `.csproj` scan under the root, `bin`/`obj` excluded
    per departure #5, cycle-safe transitive walk, ordinal-first tie-break, non-throwing on
-   missing/malformed `.csproj`). **(T29:** #9's resolver now evaluates a bounded intrinsic + user-defined
+   missing/malformed `.csproj`). **Case-only naming fallback:** preserve the exact-name pass; only if no
+   exact candidate transitively references the owner, retry names with `OrdinalIgnoreCase`. For example,
+   `ApiAppPE.UnitTests.csproj` may test `apiAppPE.csproj`. The fallback retains the bounded scan, lowercase
+   `.csproj` extension filter, `bin`/`obj` exclusion, ordinal path identity and ordinal-first tie-break.
+   The fallback pass is skipped when an exact candidate qualifies.
+   **(T29:** #9's resolver now evaluates a bounded intrinsic + user-defined
    MSBuild property set — the file-scoped intrinsic ten plus the `Directory.Build.props` ancestor chain and
    the csproj body — before matching `ProjectReference` Includes, fail-safe throughout (any unevaluable
    token stays verbatim → dropped edge → clean exit 1); see D-T29a.**)** Coverage then runs **once** against

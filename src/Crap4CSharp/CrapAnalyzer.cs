@@ -85,7 +85,12 @@ public static class CrapAnalyzer
                     ClassName: method.TypeName,
                     Complexity: method.Complexity,
                     CoveragePercent: coverage,
-                    CrapScore: crap));
+                    CrapScore: crap)
+                {
+                    File = file,
+                    StartLine = method.StartLine,
+                    EndLine = method.EndLine,
+                });
             }
         }
 

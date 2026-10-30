@@ -19,26 +19,35 @@ public sealed class CliApplication
           crap4csharp --changed  Analyze changed C# files under src/
           crap4csharp <path...>  Analyze files, or for directory args analyze <dir>/src/**/*.cs
           crap4csharp --help     Print this help message
+          --format <format>     Output console (default), json, or sarif
         """;
 
     private readonly string _projectRoot;
     private readonly TextWriter _output;
     private readonly TextWriter _error;
-    private readonly CoverageRunner _coverageRunner;
+    private readonly CoverageRunner? _coverageRunner;
+
+    public CliApplication(
+        string projectRoot,
+        TextWriter output,
+        TextWriter error)
+    {
+        ArgumentNullException.ThrowIfNull(projectRoot);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(error);
+        _projectRoot = projectRoot;
+        _output = output;
+        _error = error;
+    }
 
     public CliApplication(
         string projectRoot,
         TextWriter output,
         TextWriter error,
         CoverageRunner coverageRunner)
+        : this(projectRoot, output, error)
     {
-        ArgumentNullException.ThrowIfNull(projectRoot);
-        ArgumentNullException.ThrowIfNull(output);
-        ArgumentNullException.ThrowIfNull(error);
         ArgumentNullException.ThrowIfNull(coverageRunner);
-        _projectRoot = projectRoot;
-        _output = output;
-        _error = error;
         _coverageRunner = coverageRunner;
     }
 
@@ -58,7 +67,15 @@ public sealed class CliApplication
         IReadOnlyList<string> filesToAnalyze = FilesForMode(parsed);
         if (filesToAnalyze.Count == 0)
         {
-            _output.WriteLine("No C# files to analyze.");
+            if (parsed.Format == OutputFormat.Console)
+            {
+                _output.WriteLine("No C# files to analyze.");
+            }
+            else
+            {
+                WriteReport([], parsed.Format);
+            }
+
             return 0;
         }
 
@@ -93,7 +110,10 @@ public sealed class CliApplication
             return 1;
         }
 
-        _coverageRunner.GenerateCoverage(testProject, _projectRoot);
+        CoverageRunner coverageRunner = _coverageRunner ?? new CoverageRunner(new ProcessCommandExecutor(
+            parsed.Format == OutputFormat.Console ? _output : _error,
+            _error));
+        coverageRunner.GenerateCoverage(testProject, _projectRoot);
 
         // CoverageRunner deletes coverage/ before the run, so every report here is from THIS run: exactly
         // one for a single-TFM test project, one-per-TFM for a multi-targeted one.
@@ -133,7 +153,7 @@ public sealed class CliApplication
 
         // The report already ends with '\n' and is already sorted by both CrapAnalyzer and ReportFormatter,
         // so the Java pre-format sort is redundant and omitted (behavior-preserving; MaxCrap is order-free).
-        _output.Write(ReportFormatter.Format(metrics));
+        WriteReport(metrics, parsed.Format);
 
         double max = MaxCrap(metrics);
         if (ThresholdExceeded(max))
@@ -187,9 +207,23 @@ public sealed class CliApplication
         catch (ArgumentException ex)
         {
             _error.WriteLine(ex.Message);
-            _output.WriteLine(Usage);
+            TextWriter usageOutput = args is not null && args.Contains("--format", StringComparer.Ordinal)
+                ? _error
+                : _output;
+            usageOutput.WriteLine(Usage);
             return ParseOutcome.Exit(1);
         }
+    }
+
+    private void WriteReport(IReadOnlyList<MethodMetrics> metrics, OutputFormat format)
+    {
+        _output.Write(format switch
+        {
+            OutputFormat.Console => ReportFormatter.Format(metrics),
+            OutputFormat.Json => JsonReportFormatter.Format(metrics, _projectRoot),
+            OutputFormat.Sarif => SarifReportFormatter.Format(metrics, _projectRoot),
+            _ => throw new InvalidOperationException($"Unhandled output format: {format}"),
+        });
     }
 
     // Ports filesForMode: a switch expression over all four CliMode arms plus a default throw (W7). The

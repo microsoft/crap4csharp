@@ -1141,7 +1141,7 @@
           "xunit.extensibility.core": "[2.5.3]"
         }
       },
-      "Microsoft.Crap4CSharp": {
+      "Crap4CSharp.Tool": {
         "type": "Project",
         "dependencies": {
           "Microsoft.CodeAnalysis.CSharp": "[4.14.0, )"

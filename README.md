@@ -31,7 +31,8 @@ Each invocation resolves the code unit under analysis and the test project that 
    marker; the owning unit is a `.csproj`. All analyzed files must resolve to a **single** owning project
    (one owning project per run).
 2. **Test project** — `<Project>.Tests.csproj` **or** `<Project>.UnitTests.csproj` whose
-   `ProjectReference`s **transitively** include the owning project. crap4csharp runs **only** that test
+   `ProjectReference`s **transitively** include the owning project (exact names first, then names
+   differing only by case if no exact candidate qualifies). crap4csharp runs **only** that test
    project, and only its **unit tests** (see *Unit-test determination* below).
 3. **Fail fast (exit 1)** when there is **no owning `.csproj`**, the analyzed files **span multiple
    projects**, or there is **no matching test project** — each with a greppable stderr message.
@@ -96,6 +97,22 @@ Build:
 dotnet build -c Release
 ```
 
+### Install the preview .NET tool
+
+The JSON-capable fork can be packaged as `Crap4CSharp.Tool` version `0.1.0-preview.1`. The checkout's `global.json` requires .NET SDK 8.0.406 or a later compatible .NET 8 feature band; check `dotnet --list-sdks` before packing. From this checkout:
+
+```bash
+dotnet pack src/Crap4CSharp/Crap4CSharp.csproj -c Release -o artifacts/cli
+dotnet tool install --tool-path artifacts/tools --add-source artifacts/cli Crap4CSharp.Tool --version 0.1.0-preview.1
+artifacts/tools/crap4csharp --help
+```
+
+On Windows, the installed command is `artifacts\tools\crap4csharp.exe`.
+
+For a public release, publish the reviewed package to NuGet first, then users can install it with `dotnet tool install --global Crap4CSharp.Tool --version <released-version>`. The resulting `crap4csharp` command can be found on `PATH` by CRAP IDE, or its absolute path can be entered in `crapide.cliPath`. Keep the package on the same host as the workspace; a Dev Container needs its own installation. Packaging and private installation do not publish the tool.
+
+The tool targets .NET 8. Analyzing a project also runs its tests, so a compatible .NET SDK, the project's test dependencies and `coverlet.collector` are still required. The current CLI supports one owning project per invocation and replaces `coverage/` in the invocation directory.
+
 From the project root you want to analyze:
 
 ```bash
@@ -110,6 +127,7 @@ dotnet run --project src/Crap4CSharp -c Release
 --changed             Analyze changed C# files under src/
 <file ...>            Analyze only these files
 <directory ...>       Analyze all C# files under each directory's src/ subtree
+--format <format>     console (default), json, or sarif
 ```
 
 Examples:
@@ -121,6 +139,33 @@ dotnet run --project src/Crap4CSharp -c Release -- --changed
 dotnet run --project src/Crap4CSharp -c Release -- src/Sample.cs
 dotnet run --project src/Crap4CSharp -c Release -- project-a project-b
 ```
+
+`--format` accepts one lowercase value and may appear before or after paths. With no paths it
+analyzes `src/`; it can also be combined with `--changed`. After building, use the compiled CLI to
+keep launcher/build messages out of redirected output:
+
+```bash
+dotnet src/Crap4CSharp/bin/Release/net8.0/Microsoft.Crap4CSharp.dll --format console
+dotnet src/Crap4CSharp/bin/Release/net8.0/Microsoft.Crap4CSharp.dll --format json > crap.json
+dotnet src/Crap4CSharp/bin/Release/net8.0/Microsoft.Crap4CSharp.dll --format sarif > crap.sarif
+```
+
+JSON contains a `members` array. Each member has `name` (qualified type plus member name), `file`,
+`startLine`, `endLine`, `complexity`, `coveragePercent` (0–100), and `crap`. Metrics are unrounded
+numbers; unavailable coverage and CRAP are `null`. Locations use 1-based lines and paths relative to
+the invocation directory with `/` separators where possible; unavailable location fields are `null`.
+Overloads share a name and are distinguished by their file and line range. Members are sorted by CRAP
+descending, with unavailable scores last and ordinal file/name and line tie-breakers.
+
+SARIF 2.1.0 reports only members whose CRAP is **greater than 8.0**, using rule `CRAP001` at `warning`
+level for the existing quality gate. Results include numeric metrics, member names and available
+source locations. Relative source URIs are percent-encoded and use `%SRCROOT%` to denote the invocation
+directory; consumers can map that base to their checkout.
+
+JSON/SARIF analysis writes only the document to stdout, with coverage progress and diagnostics on
+stderr. No files produces an empty document and exit 0; a threshold failure still produces the report
+and exits 2; fatal errors exit 1 without a report. Format-related usage errors go to stderr.
+`--help` retains precedence over all other arguments and prints usage to stdout, even with `--format`.
 
 ## Exit codes
 

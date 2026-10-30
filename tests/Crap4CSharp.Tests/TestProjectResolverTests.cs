@@ -40,6 +40,84 @@ public class TestProjectResolverTests
         });
     }
 
+    [Theory]
+    [InlineData("ApiAppPE.UnitTests")]
+    [InlineData("ApiAppPE.Tests")]
+    [InlineData("APIAPPPE.unittests")]
+    public void ResolvesCaseVariantNameByDirectReference(string testProjectName)
+    {
+        WithTempRoot(root =>
+        {
+            string owning = WriteProject(SubDir(root, "apiAppPE"), "apiAppPE");
+            string test = WriteProject(
+                SubDir(root, "tests", testProjectName), testProjectName, @"..\..\apiAppPE\apiAppPE.csproj");
+
+            string? result = TestProjectResolver.ResolveTestProject(owning, root);
+
+            result.Should().Be(test);
+        });
+    }
+
+    [Fact]
+    public void PrefersExactNameOverOrdinalEarlierCaseVariant()
+    {
+        WithTempRoot(root =>
+        {
+            string owning = WriteProject(SubDir(root, "src", "Foo"), "Foo");
+            WriteProject(SubDir(root, "a"), "FOO.Tests", @"..\src\Foo\Foo.csproj");
+            string exact = WriteProject(SubDir(root, "z"), "Foo.UnitTests", @"..\src\Foo\Foo.csproj");
+
+            string? result = TestProjectResolver.ResolveTestProject(owning, root);
+
+            result.Should().Be(exact);
+        });
+    }
+
+    [Fact]
+    public void FallsBackWhenExactNameDoesNotReferenceOwner()
+    {
+        WithTempRoot(root =>
+        {
+            string owning = WriteProject(SubDir(root, "src", "Foo"), "Foo");
+            WriteProject(SubDir(root, "a"), "Foo.Tests");
+            string fallback = WriteProject(SubDir(root, "z"), "FOO.UnitTests", @"..\src\Foo\Foo.csproj");
+
+            string? result = TestProjectResolver.ResolveTestProject(owning, root);
+
+            result.Should().Be(fallback);
+        });
+    }
+
+    [Fact]
+    public void RejectsCaseVariantWithoutOwnerReference()
+    {
+        WithTempRoot(root =>
+        {
+            string owning = WriteProject(SubDir(root, "src", "Foo"), "Foo");
+            WriteProject(SubDir(root, "src", "Bar"), "Bar");
+            WriteProject(SubDir(root, "tests", "FOO.Tests"), "FOO.Tests", @"..\..\src\Bar\Bar.csproj");
+
+            string? result = TestProjectResolver.ResolveTestProject(owning, root);
+
+            result.Should().BeNull();
+        });
+    }
+
+    [Fact]
+    public void PicksOrdinalFirstWhenMultipleCaseVariantsQualify()
+    {
+        WithTempRoot(root =>
+        {
+            string owning = WriteProject(SubDir(root, "src", "Foo"), "Foo");
+            WriteProject(SubDir(root, "z"), "FOO.Tests", @"..\src\Foo\Foo.csproj");
+            string first = WriteProject(SubDir(root, "a"), "foo.UnitTests", @"..\src\Foo\Foo.csproj");
+
+            string? result = TestProjectResolver.ResolveTestProject(owning, root);
+
+            result.Should().Be(first);
+        });
+    }
+
     [Fact]
     public void FollowsTransitiveProjectReferences()
     {

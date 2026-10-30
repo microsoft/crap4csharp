@@ -12,6 +12,24 @@ using System.Diagnostics;
 // full pipe buffer can never deadlock WaitForExit.
 public sealed class ProcessCommandExecutor : ICommandExecutor
 {
+    private readonly TextWriter _output;
+    private readonly TextWriter _error;
+
+    public ProcessCommandExecutor()
+        : this(Console.Out, Console.Error)
+    {
+    }
+
+    public ProcessCommandExecutor(TextWriter output, TextWriter error)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(error);
+
+        // Both child streams may target the same writer in machine-readable modes.
+        _output = TextWriter.Synchronized(output);
+        _error = ReferenceEquals(output, error) ? _output : TextWriter.Synchronized(error);
+    }
+
     // Ports run(List<String>, Path) exactly.
     public int Run(IReadOnlyList<string> command, string workingDirectory)
     {
@@ -41,14 +59,14 @@ public sealed class ProcessCommandExecutor : ICommandExecutor
         {
             if (e.Data is not null)
             {
-                Console.Out.WriteLine(e.Data);
+                _output.WriteLine(e.Data);
             }
         };
         process.ErrorDataReceived += (_, e) =>
         {
             if (e.Data is not null)
             {
-                Console.Error.WriteLine(e.Data);
+                _error.WriteLine(e.Data);
             }
         };
 

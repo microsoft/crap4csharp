@@ -7,7 +7,7 @@ namespace Microsoft.Crap4CSharp;
 // String.equals / String.startsWith.
 public static class CliArgumentsParser
 {
-    // Ports parse(String[]) exactly.
+    // Preserve legacy parsing while removing the optional format flag and its value from file args.
     public static CliArguments Parse(string[] args)
     {
         // Java implicitly throws NullPointerException on `args.length` when args is null; the
@@ -26,14 +26,15 @@ public static class CliArgumentsParser
         }
 
         bool changed = ContainsFlag(args, "--changed");
-        IReadOnlyList<string> values = NonFlagArgs(args);
+        (OutputFormat format, bool hasFormat, List<string> values) = ParseValues(args);
         EnsureChangedIsNotCombined(changed, values);
         if (changed)
         {
-            return new CliArguments(CliMode.ChangedSrc, []);
+            return new CliArguments(CliMode.ChangedSrc, []) { Format = format };
         }
 
-        return new CliArguments(CliMode.ExplicitFiles, [.. values]);
+        CliMode mode = hasFormat && values.Count == 0 ? CliMode.AllSrc : CliMode.ExplicitFiles;
+        return new CliArguments(mode, [.. values]) { Format = format };
     }
 
     private static bool ContainsFlag(string[] args, string flag)
@@ -49,11 +50,37 @@ public static class CliArgumentsParser
         return false;
     }
 
-    private static List<string> NonFlagArgs(string[] args)
+    private static (OutputFormat Format, bool HasFormat, List<string> Values) ParseValues(string[] args)
     {
+        OutputFormat format = OutputFormat.Console;
+        bool hasFormat = false;
         List<string> values = [];
-        foreach (string arg in args)
+        for (int index = 0; index < args.Length; index++)
         {
+            string arg = args[index];
+            if (string.Equals(arg, "--format", StringComparison.Ordinal))
+            {
+                if (hasFormat)
+                {
+                    throw new ArgumentException("--format cannot be specified more than once");
+                }
+
+                hasFormat = true;
+                if (++index == args.Length || args[index].StartsWith("--", StringComparison.Ordinal))
+                {
+                    throw new ArgumentException("--format requires a value: console, json, or sarif");
+                }
+
+                format = args[index] switch
+                {
+                    "console" => OutputFormat.Console,
+                    "json" => OutputFormat.Json,
+                    "sarif" => OutputFormat.Sarif,
+                    _ => throw new ArgumentException($"Invalid --format value '{args[index]}': expected console, json, or sarif"),
+                };
+                continue;
+            }
+
             if (arg.StartsWith("--", StringComparison.Ordinal))
             {
                 continue;
@@ -62,10 +89,10 @@ public static class CliArgumentsParser
             values.Add(arg);
         }
 
-        return values;
+        return (format, hasFormat, values);
     }
 
-    private static void EnsureChangedIsNotCombined(bool changed, IReadOnlyList<string> values)
+    private static void EnsureChangedIsNotCombined(bool changed, List<string> values)
     {
         if (changed && values.Count > 0)
         {

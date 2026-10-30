@@ -1,6 +1,7 @@
 namespace Microsoft.Crap4CSharp.Tests;
 
 using System.Diagnostics;
+using System.Text.Json;
 
 // The genuinely-new T15 integration tests: spawn the REAL built crap4csharp entry point end-to-end and
 // assert its process exit code. Ports crap4java MainTest's two mainProcess* tests -- the only MainTest
@@ -14,6 +15,31 @@ public class ProgramTests
 {
     private const string AppDllName = "Microsoft.Crap4CSharp.dll";
     private const int SpawnTimeoutMs = 60_000;
+
+    [Theory]
+    [InlineData("json")]
+    [InlineData("sarif")]
+    public async Task MainProcessWritesOnlyAnEmptyMachineDocumentWhenNoFilesExist(string format)
+    {
+        SpawnResult result = await RunEntryPointAsync("--format", format);
+
+        result.ExitCode.Should().Be(0);
+        result.StandardError.Should().BeEmpty();
+        using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
+        JsonElement members = format == "json" ? document.RootElement.GetProperty("members")
+            : document.RootElement.GetProperty("runs")[0].GetProperty("results");
+        members.GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task MainProcessRejectsInvalidFormatWithoutWritingToStdout()
+    {
+        SpawnResult result = await RunEntryPointAsync("--format", "xml");
+
+        result.ExitCode.Should().Be(1);
+        result.StandardOutput.Should().BeEmpty();
+        result.StandardError.Should().Contain("Invalid --format value").And.Contain("Usage:");
+    }
 
     [Fact]
     public async Task MainProcessExitsZeroForHelp()

@@ -1,5 +1,7 @@
 namespace Microsoft.Crap4CSharp.Tests;
 
+using System.Text.Json;
+
 // Ports crap4java's CliApplicationTest + MainTest into the T14 composition layer, reshaped for Model B
 // (departures #9/#10) on top of the earlier #1 (fail-fast) and #7 (resolve-once). CliApplication is exercised
 // directly (no Program/T15), injecting a fake ICommandExecutor via CoverageRunner -- exactly the Java
@@ -13,6 +15,146 @@ namespace Microsoft.Crap4CSharp.Tests;
 // crap4java's lowercase.
 public class CliApplicationTests
 {
+    [Fact]
+    public void DefaultAndExplicitConsoleReportsAreIdentical()
+    {
+        WithTempRoot(root =>
+        {
+            ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
+            using StringWriter defaultOutput = new();
+            using StringWriter consoleOutput = new();
+            using StringWriter error = new();
+            CoverageRunner runner = new(new FakeExecutor(0, Alpha75Xml));
+
+            new CliApplication(root, defaultOutput, error, runner).Execute([]).Should().Be(0);
+            new CliApplication(root, consoleOutput, error, runner).Execute(["--format", "console"]).Should().Be(0);
+
+            consoleOutput.ToString().Should().Be(defaultOutput.ToString());
+            defaultOutput.ToString().Should().Be(ReportFormatter.Format([new("alpha", "demo.Sample", 2, 75.0, 2.0625)]));
+            error.ToString().Should().BeEmpty();
+        });
+    }
+
+    [Theory]
+    [InlineData("json", false, 0)]
+    [InlineData("sarif", false, 0)]
+    [InlineData("json", true, 2)]
+    [InlineData("sarif", true, 2)]
+    public void MachineReportsPreserveMetricsLocationsAndThresholdExits(string format, bool risky, int expectedExit)
+    {
+        WithTempRoot(root =>
+        {
+            string source = risky ? AlphaSampleSource.Replace("if (a)", "if (a && a)", StringComparison.Ordinal) : AlphaSampleSource;
+            string coverage = risky ? Alpha75Xml.Replace("hits=\"1\"", "hits=\"0\"", StringComparison.Ordinal) : Alpha75Xml;
+            ScaffoldModule(root, "Foo", "Sample.cs", source);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, coverage)));
+
+            app.Execute(["--format", format]).Should().Be(expectedExit);
+
+            using JsonDocument document = JsonDocument.Parse(output.ToString());
+            if (format == "json")
+            {
+                JsonElement member = document.RootElement.GetProperty("members")[0];
+                member.GetProperty("name").GetString().Should().Be("demo.Sample.alpha");
+                member.GetProperty("file").GetString().Should().Be("src/Foo/Sample.cs");
+                member.GetProperty("startLine").GetInt32().Should().Be(4);
+                member.GetProperty("endLine").GetInt32().Should().Be(11);
+                member.GetProperty("complexity").GetInt32().Should().Be(risky ? 3 : 2);
+                member.GetProperty("coveragePercent").GetDouble().Should().Be(risky ? 0.0 : 75.0);
+                member.GetProperty("crap").GetDouble().Should().Be(risky ? 12.0 : 2.0625);
+            }
+            else
+            {
+                JsonElement results = document.RootElement.GetProperty("runs")[0].GetProperty("results");
+                results.GetArrayLength().Should().Be(risky ? 1 : 0);
+            }
+
+            if (risky)
+            {
+                error.ToString().Should().Contain("CRAP threshold exceeded: 12.0 > 8.0");
+            }
+            else
+            {
+                error.ToString().Should().BeEmpty();
+            }
+        });
+    }
+
+    [Theory]
+    [InlineData("json")]
+    [InlineData("sarif")]
+    public void MachineModeWithNoFilesWritesAnEmptyDocument(string format)
+    {
+        WithTempRoot(root =>
+        {
+            using StringWriter output = new();
+            using StringWriter error = new();
+            FakeExecutor fake = new(0, null);
+            CliApplication app = new(root, output, error, new CoverageRunner(fake));
+
+            app.Execute(["--format", format]).Should().Be(0);
+
+            using JsonDocument document = JsonDocument.Parse(output.ToString());
+            JsonElement members = format == "json" ? document.RootElement.GetProperty("members")
+                : document.RootElement.GetProperty("runs")[0].GetProperty("results");
+            members.GetArrayLength().Should().Be(0);
+            error.ToString().Should().BeEmpty();
+            fake.Directories.Should().BeEmpty();
+        });
+    }
+
+    [Theory]
+    [InlineData("json")]
+    [InlineData("sarif")]
+    public void MachineModeFatalCoverageFailureLeavesStdoutEmpty(string format)
+    {
+        WithTempRoot(root =>
+        {
+            ScaffoldModule(root, "Foo", "Sample.cs", AlphaSampleSource);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error, new CoverageRunner(new FakeExecutor(0, null)));
+
+            app.Execute(["--format", format]).Should().Be(1);
+
+            output.ToString().Should().BeEmpty();
+            error.ToString().Should().Contain("No coverage report was produced");
+        });
+    }
+
+    [Theory]
+    [InlineData("json")]
+    [InlineData("xml")]
+    public void ParseErrorsWithFormatWriteUsageOnlyToStderr(string format)
+    {
+        WithTempRoot(root =>
+        {
+            using StringWriter output = new();
+            using StringWriter error = new();
+            CliApplication app = new(root, output, error);
+
+            app.Execute(["--changed", "A.cs", "--format", format]).Should().Be(1);
+
+            output.ToString().Should().BeEmpty();
+            error.ToString().Should().Contain("Usage:");
+        });
+    }
+
+    [Fact]
+    public void HelpWithInvalidFormatStillWritesUsageToStdout()
+    {
+        using StringWriter output = new();
+        using StringWriter error = new();
+        CliApplication app = new(Path.GetTempPath(), output, error);
+
+        app.Execute(["--format", "xml", "--help"]).Should().Be(0);
+
+        output.ToString().Should().Contain("Usage:");
+        error.ToString().Should().BeEmpty();
+    }
+
     private const string AlphaSampleSource = """
         namespace demo;
         class Sample

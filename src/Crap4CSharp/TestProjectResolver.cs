@@ -12,11 +12,11 @@ using System.Xml.Linq;
 //
 // Search is bounded to the invocation root and deterministic: enumerate .csproj under the root (anti-glob
 // EndsWith(".csproj", Ordinal)), excluding bin/obj segments (parity with departure #5), filter to the two
-// candidate names, keep those transitively referencing the owning project, ordinal-first tie-break. No match
-// => null (CliApplication.Execute fail-fasts, departure #1, exit 1). StringComparer.Ordinal throughout
-// (departure #3) EXCEPT MSBuild property-NAME lookup, which is OrdinalIgnoreCase per MSBuild semantics
-// (NOT a #3 regression -- every path/value stays Ordinal); missing/unparseable referenced .csproj is
-// treated as zero references (skip, never throw).
+// candidate names, keep those transitively referencing the owning project, ordinal-first tie-break. Exact
+// names take priority; only when none qualifies, retry names with OrdinalIgnoreCase. No match => null
+// (CliApplication.Execute fail-fasts, departure #1, exit 1). Path identity and sorting stay Ordinal
+// (departure #3); MSBuild property-NAME lookup also uses OrdinalIgnoreCase per MSBuild semantics.
+// Missing/unparseable referenced .csproj is treated as zero references (skip, never throw).
 //
 // D-T29a (folds under departure #9): before matching each <ProjectReference Include>, the resolver
 // evaluates a BOUNDED MSBuild property set so a legitimate $(RepoRoot)/$(MSBuildThisFileDirectory)-based
@@ -55,15 +55,31 @@ public static partial class TestProjectResolver
 
         ResolutionContext context = new(root);
 
-        return Directory
-            .EnumerateFiles(root, "*", SearchOption.AllDirectories)
-            .Where(file => file.EndsWith(".csproj", StringComparison.Ordinal))
-            .Where(file => !HasBuildOutputSegment(file))
-            .Where(file =>
+        string[] projects =
+        [
+            .. Directory
+                .EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                .Where(file => file.EndsWith(".csproj", StringComparison.Ordinal))
+                .Where(file => !HasBuildOutputSegment(file)),
+        ];
+
+        return FindReferencingProject(projects, dotTests, dotUnitTests, owner, context, StringComparison.Ordinal)
+            ?? FindReferencingProject(projects, dotTests, dotUnitTests, owner, context, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? FindReferencingProject(
+        string[] projects,
+        string dotTests,
+        string dotUnitTests,
+        string owner,
+        ResolutionContext context,
+        StringComparison nameComparison)
+    {
+        return projects.Where(file =>
             {
                 string name = Path.GetFileNameWithoutExtension(file);
-                return string.Equals(name, dotTests, StringComparison.Ordinal)
-                    || string.Equals(name, dotUnitTests, StringComparison.Ordinal);
+                return string.Equals(name, dotTests, nameComparison)
+                    || string.Equals(name, dotUnitTests, nameComparison);
             })
             .Where(candidate => ReferencesTransitively(candidate, owner, context))
             .OrderBy(file => file, StringComparer.Ordinal)
@@ -165,8 +181,7 @@ public static partial class TestProjectResolver
     // last-writer-wins): the Directory.Build.props ancestor chain (parent -> nearest), then N's own
     // <PropertyGroup>s (so the csproj body overrides props files). Each raw definition is fixpoint-expanded;
     // the N-scoped intrinsic ten are overlaid last so reserved props win over any user shadow. Property NAMES
-    // compare OrdinalIgnoreCase (MSBuild semantics -- the ONLY OrdinalIgnoreCase here; every value stays
-    // Ordinal, NOT a departure #3 regression).
+    // compare OrdinalIgnoreCase (MSBuild semantics); every path value stays Ordinal.
     private static Dictionary<string, string> ResolvePropertyMap(
         string projectFile, XDocument projectDoc, ResolutionContext context)
     {
